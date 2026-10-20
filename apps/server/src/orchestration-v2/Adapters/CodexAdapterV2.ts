@@ -103,8 +103,9 @@ import {
 } from "../../provider/CodexDeveloperInstructions.ts";
 import {
   CODEX_T3_MCP_SERVER_NAME,
+  codexApprovalPolicyForTurn,
+  codexMcpElicitationDisposition,
   describeMcpElicitation,
-  isAutoAcceptedT3ToolCallElicitation,
   toMcpElicitationResponse,
 } from "../../provider/CodexMcpElicitation.ts";
 import {
@@ -733,10 +734,12 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     readonly appContext?: ProviderAdapter.ProviderAdapterV2TurnInput["appContext"];
   }) {
     const runtimeModeDefaults = codexRuntimeModeTurnDefaults(input.runtimePolicy.runtimeMode);
-    const approvalPolicy =
+    const approvalPolicy = codexApprovalPolicyForTurn(
+      input.runtimePolicy,
       input.runtimePolicy.approvalPolicy === undefined
         ? runtimeModeDefaults.approvalPolicy
-        : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
+        : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy),
+    );
     const sandboxPolicy =
       input.runtimePolicy.sandboxPolicy === undefined
         ? runtimeModeDefaults.sandboxPolicy
@@ -5372,12 +5375,23 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 action: "decline",
               } satisfies CodexSchema.McpServerElicitationRequestResponse;
             }
-            if (isAutoAcceptedT3ToolCallElicitation(context.input.runtimePolicy, payload)) {
-              yield* Effect.logInfo("Accepted a T3 tool call for a read-only orchestrating turn.", {
-                threadId: context.projectionThreadId,
-                prompt: payload.message,
-              });
-              return toMcpElicitationResponse(payload, "accept");
+            const disposition = codexMcpElicitationDisposition(
+              context.input.runtimePolicy,
+              payload,
+            );
+            if (disposition !== "ask") {
+              yield* Effect.logInfo(
+                "Answered an MCP elicitation for a read-only orchestrating turn.",
+                {
+                  threadId: context.projectionThreadId,
+                  serverName: payload.serverName,
+                  disposition,
+                  prompt: payload.message,
+                },
+              );
+              return disposition === "accept"
+                ? toMcpElicitationResponse(payload, "accept")
+                : ({ action: "decline" } satisfies CodexSchema.McpServerElicitationRequestResponse);
             }
 
             const nativeRequestId =

@@ -228,19 +228,42 @@ const isMcpToolCallApprovalMetadata = Schema.is(
 );
 
 /**
- * Codex asks before a tool call that is not marked read-only whenever the turn
- * is sandboxed. A turn allowed to orchestrate T3 exists to launch and steer
- * threads through T3's own server, so those asks are answered here; asks from
- * any other server, and every other kind of elicitation, still reach the user.
+ * Under approval policy "never" Codex fails every MCP tool call that is not
+ * marked read-only without asking, which would leave a project thread unable to
+ * launch anything. A turn allowed to orchestrate T3 instead lets MCP approvals
+ * through to the adapter; sandbox escapes and every other category stay
+ * rejected without asking.
  */
-export function isAutoAcceptedT3ToolCallElicitation(
+export function codexApprovalPolicyForTurn(
+  runtimePolicy: ProviderAdapterV2RuntimePolicy,
+  approvalPolicy: EffectCodexSchema.V2TurnStartParams__AskForApproval | null,
+): EffectCodexSchema.V2TurnStartParams__AskForApproval | null {
+  return runtimePolicy.allowT3Orchestration === true && approvalPolicy === "never"
+    ? {
+        granular: {
+          mcp_elicitations: true,
+          request_permissions: false,
+          rules: false,
+          sandbox_approval: false,
+          skill_approval: false,
+        },
+      }
+    : approvalPolicy;
+}
+
+/**
+ * How the adapter answers an MCP elicitation. In a turn allowed to orchestrate
+ * T3, T3's own tool calls are accepted and everything else is declined, as the
+ * turn's "never" policy would; any other turn asks the user.
+ */
+export function codexMcpElicitationDisposition(
   runtimePolicy: ProviderAdapterV2RuntimePolicy,
   payload: EffectCodexSchema.McpServerElicitationRequestParams,
-): boolean {
-  return (
-    runtimePolicy.allowT3Orchestration === true &&
-    payload.serverName === CODEX_T3_MCP_SERVER_NAME &&
+): "accept" | "decline" | "ask" {
+  if (runtimePolicy.allowT3Orchestration !== true) return "ask";
+  return payload.serverName === CODEX_T3_MCP_SERVER_NAME &&
     payload.mode !== "url" &&
     isMcpToolCallApprovalMetadata(payload._meta)
-  );
+    ? "accept"
+    : "decline";
 }
