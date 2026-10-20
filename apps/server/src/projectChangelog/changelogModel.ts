@@ -616,7 +616,6 @@ export interface ProductionState {
   readonly signal: ProductionSignal;
   readonly watermark: number | "head" | null;
   readonly stale: boolean;
-  readonly resolvedAt: number;
 }
 
 export function isInProduction(

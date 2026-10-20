@@ -475,7 +475,6 @@ describe("production", () => {
       signal: tag,
       watermark,
       stale: false,
-      resolvedAt: T0,
     });
     expect(isInProduction({ lastOrdinal: 4 }, state(4))).toBe(true);
     expect(isInProduction({ lastOrdinal: 5 }, state(4))).toBe(false);
