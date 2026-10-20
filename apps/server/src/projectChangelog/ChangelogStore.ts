@@ -49,6 +49,7 @@ const DDL = [
      default_branch TEXT,
      head_sha TEXT,
      head_ordinal INTEGER,
+     history_generation INTEGER NOT NULL DEFAULT 0,
      production_json TEXT,
      sync_json TEXT NOT NULL,
      next_sync_at INTEGER NOT NULL DEFAULT 0,
@@ -206,6 +207,8 @@ export interface RepositoryRow {
   readonly repository: GitHubRepository;
   readonly defaultBranch: string | null;
   readonly cursor: { readonly headSha: string; readonly headOrdinal: number } | null;
+  /** Counts resets: ordinals and unit keys repeat across one, so they alone cannot place a page. */
+  readonly historyGeneration: number;
   readonly production: ProductionState | null;
   readonly sync: RepositorySyncStatus;
   readonly nextSyncAt: number;
@@ -370,6 +373,7 @@ interface RepositorySqlRow {
   readonly defaultBranch: string | null;
   readonly headSha: string | null;
   readonly headOrdinal: number | null;
+  readonly historyGeneration: number;
   readonly productionJson: string | null;
   readonly syncJson: string;
   readonly nextSyncAt: number;
@@ -411,6 +415,7 @@ const decodeRepository = Effect.fnUntraced(function* (row: RepositorySqlRow) {
       row.headSha === null || row.headOrdinal === null
         ? null
         : { headSha: row.headSha, headOrdinal: row.headOrdinal },
+    historyGeneration: row.historyGeneration,
     production:
       row.productionJson === null ? null : yield* productionJson.decode(row.productionJson),
     sync: yield* syncJson.decode(row.syncJson),
@@ -450,6 +455,17 @@ const make = Effect.gen(function* () {
 
   yield* Effect.gen(function* () {
     for (const statement of DDL) yield* sql.unsafe(statement);
+    // Homes from before the generation have the table without it, and bumping SCHEMA_VERSION
+    // would drop every table.
+    const columns = yield* sql<{ readonly name: string }>`
+      PRAGMA table_info(fork_changelog_repositories)
+    `;
+    if (!columns.some((column) => column.name === "history_generation")) {
+      yield* sql`
+        ALTER TABLE fork_changelog_repositories
+        ADD COLUMN history_generation INTEGER NOT NULL DEFAULT 0
+      `;
+    }
     const version = yield* sql<{ readonly value: string }>`
       SELECT value FROM fork_changelog_meta WHERE key = 'schema_version'
     `;
@@ -467,7 +483,8 @@ const make = Effect.gen(function* () {
   const selectRepository = (key: RepositoryKey) => sql<RepositorySqlRow>`
     SELECT repository_key AS "repositoryKey", host, owner, name, web_url AS "webUrl",
       default_branch AS "defaultBranch", head_sha AS "headSha", head_ordinal AS "headOrdinal",
-      production_json AS "productionJson", sync_json AS "syncJson", next_sync_at AS "nextSyncAt"
+      history_generation AS "historyGeneration", production_json AS "productionJson",
+      sync_json AS "syncJson", next_sync_at AS "nextSyncAt"
     FROM fork_changelog_repositories
     WHERE repository_key = ${key}
   `;
@@ -695,6 +712,7 @@ const make = Effect.gen(function* () {
           default_branch = ${write.defaultBranch},
           head_sha = ${write.cursor.headSha},
           head_ordinal = ${write.cursor.headOrdinal},
+          history_generation = history_generation + ${write.reset ? 1 : 0},
           production_json = ${productionJson.encode(write.production)},
           updated_at = ${write.now}
         WHERE repository_key = ${write.key}

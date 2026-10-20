@@ -134,6 +134,30 @@ layer("ChangelogStore", (it) => {
     }),
   );
 
+  it.effect("gives an older home's rows a history generation that only a reset advances", () =>
+    Effect.gen(function* () {
+      const store = yield* fresh;
+      yield* store.applySync(syncWrite([landed("a", { _tag: "Direct" })]));
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`ALTER TABLE fork_changelog_repositories DROP COLUMN history_generation`;
+
+      const upgraded = yield* Effect.provide(
+        ChangelogStore.ChangelogStore,
+        Layer.fresh(ChangelogStore.layer),
+      );
+      const generation = upgraded
+        .getRepository(key)
+        .pipe(Effect.map(Option.map((row) => [row.cursor?.headSha, row.historyGeneration])));
+      assert.deepEqual(yield* generation, Option.some(["a", 0]));
+      assert.deepEqual(yield* pageKeys(upgraded), [["push:a", "pending"]]);
+
+      yield* upgraded.applySync(syncWrite([landed("b", { _tag: "Direct" })], { base: 1 }));
+      assert.deepEqual(yield* generation, Option.some(["b", 0]));
+      yield* upgraded.applySync(syncWrite([landed("c", { _tag: "Direct" })], { reset: true }));
+      assert.deepEqual(yield* generation, Option.some(["c", 1]));
+    }),
+  );
+
   it.effect("writes a known repository's row only when its name or address changed", () =>
     Effect.gen(function* () {
       const store = yield* fresh;

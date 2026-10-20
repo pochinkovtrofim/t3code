@@ -153,15 +153,22 @@ const AVAILABILITY = {
 
 const isoOf = (millis: number) => DateTime.formatIso(DateTime.makeUnsafe(millis));
 
-function encodeCursor(unit: Pick<ChangeUnit, "lastOrdinal" | "key">): ProjectChangelogCursor {
-  return ProjectChangelogCursor.make(`o${unit.lastOrdinal}.${unit.key}`);
+function encodeCursor(
+  historyGeneration: number,
+  unit: Pick<ChangeUnit, "lastOrdinal" | "key">,
+): ProjectChangelogCursor {
+  return ProjectChangelogCursor.make(`g${historyGeneration}.o${unit.lastOrdinal}.${unit.key}`);
 }
 
-function decodeCursor(
-  cursor: string | undefined,
-): { readonly lastOrdinal: number; readonly key: string } | null {
-  const match = cursor === undefined ? null : /^o(\d+)\.(.+)$/.exec(cursor);
-  return match === null ? null : { lastOrdinal: Number(match[1]), key: match[2]! };
+function decodeCursor(cursor: string | undefined): {
+  readonly historyGeneration: number;
+  readonly lastOrdinal: number;
+  readonly key: string;
+} | null {
+  const match = cursor === undefined ? null : /^g(\d+)\.o(\d+)\.(.+)$/.exec(cursor);
+  return match === null
+    ? null
+    : { historyGeneration: Number(match[1]), lastOrdinal: Number(match[2]), key: match[3]! };
 }
 
 interface SyncCrash {
@@ -1023,7 +1030,9 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
         };
       }),
       nextCursor:
-        input.entries.length > input.limit ? encodeCursor(visible[visible.length - 1]!.unit) : null,
+        input.entries.length > input.limit
+          ? encodeCursor(row.historyGeneration, visible[visible.length - 1]!.unit)
+          : null,
     };
   };
 
@@ -1053,12 +1062,12 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
   }, Effect.scoped);
 
   const ordinalOfLiveCursor = Effect.fn("ProjectChangelog.ordinalOfLiveCursor")(function* (
-    key: RepositoryKey,
+    row: ChangelogStore.RepositoryRow,
     text: string | undefined,
   ) {
     const cursor = decodeCursor(text);
-    if (cursor === null) return null;
-    const boundary = yield* store.unitEndingAt(key, cursor.lastOrdinal);
+    if (cursor === null || cursor.historyGeneration !== row.historyGeneration) return null;
+    const boundary = yield* store.unitEndingAt(row.repository.key, cursor.lastOrdinal);
     return boundary?.key === cursor.key ? cursor.lastOrdinal : null;
   });
 
@@ -1097,7 +1106,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     const limit = input.limit ?? DEFAULT_READ_LIMIT;
     const entries = yield* store.page({
       key,
-      beforeOrdinal: yield* ordinalOfLiveCursor(key, input.cursor),
+      beforeOrdinal: yield* ordinalOfLiveCursor(row, input.cursor),
       limit: limit + 1,
     });
     const syncing = yield* FiberMap.has(syncs, key);

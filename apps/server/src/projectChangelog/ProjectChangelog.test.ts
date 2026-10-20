@@ -1153,6 +1153,32 @@ describe("ProjectChangelog", () => {
     }).pipe(Effect.provide(layer), atNow);
   });
 
+  it.effect("starts over when a force push recreates the cursor's entry at its old place", () => {
+    const { github, layer } = harness();
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const before = yield* changelog.read({ projectId: p1, limit: 3 });
+      assert.strictEqual(before.entries.at(-1)?.id, "pr:7");
+
+      github.state.commits = [
+        commit("x1", null, NOW - 50 * MINUTE, "alice", "Start over"),
+        commit("x2", "x1", NOW - 40 * MINUTE, "web-flow", "Add dark mode (#7)"),
+        commit("x3", "x2", NOW - 20 * MINUTE, "carol", "Add exports"),
+        commit("x4", "x3", NOW - 10 * MINUTE, "dave", "Add import"),
+      ];
+      github.state.pulls = [pull(7, "x2", NOW - 40 * MINUTE)];
+      yield* TestClock.adjust(16 * MINUTE);
+      const head = yield* changelog.read({ projectId: p1, limit: 3 });
+      assert.strictEqual(head.entries.at(-1)?.id, "pr:7");
+      const stale = yield* changelog.read({ projectId: p1, limit: 3, cursor: before.nextCursor! });
+      assert.deepStrictEqual(
+        stale.entries.map((entry) => entry.id),
+        head.entries.map((entry) => entry.id),
+      );
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
   it.effect("watches the head page and syncs right after a merge done in T3", () => {
     const { github, layer } = harness();
     return Effect.gen(function* () {
