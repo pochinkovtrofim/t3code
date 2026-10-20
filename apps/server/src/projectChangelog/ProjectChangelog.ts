@@ -159,14 +159,19 @@ const AVAILABILITY = {
 
 const isoOf = (millis: number) => DateTime.formatIso(DateTime.makeUnsafe(millis));
 
-function encodeCursor(ordinal: number): ProjectChangelogCursor {
-  return ProjectChangelogCursor.make(`o${ordinal}`);
+/**
+ * The last entry of the page before, by position and key. A reset renumbers positions, so a
+ * cursor counts only while that entry is still live at that position.
+ */
+function encodeCursor(unit: Pick<ChangeUnit, "lastOrdinal" | "key">): ProjectChangelogCursor {
+  return ProjectChangelogCursor.make(`o${unit.lastOrdinal}.${unit.key}`);
 }
 
-/** A cursor this server did not issue reads from the head. */
-function decodeCursor(cursor: string | undefined): number | null {
-  const match = cursor === undefined ? null : /^o(\d+)$/.exec(cursor);
-  return match === null ? null : Number(match[1]);
+function decodeCursor(
+  cursor: string | undefined,
+): { readonly lastOrdinal: number; readonly key: string } | null {
+  const match = cursor === undefined ? null : /^o(\d+)\.(.+)$/.exec(cursor);
+  return match === null ? null : { lastOrdinal: Number(match[1]), key: match[2]! };
 }
 
 /** A defect while reading or applying a sync, kept so the page says the sync failed. */
@@ -1007,9 +1012,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
         };
       }),
       nextCursor:
-        input.entries.length > input.limit
-          ? encodeCursor(visible[visible.length - 1]!.unit.lastOrdinal)
-          : null,
+        input.entries.length > input.limit ? encodeCursor(visible[visible.length - 1]!.unit) : null,
     };
   };
 
@@ -1071,9 +1074,13 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       row = Option.getOrElse(yield* store.getRepository(key), () => row);
     }
     const limit = input.limit ?? DEFAULT_READ_LIMIT;
+    // A cursor this server did not issue, or one that outlived its history, reads from the head.
+    const cursor = decodeCursor(input.cursor);
+    const boundary = cursor === null ? null : yield* store.unitEndingAt(key, cursor.lastOrdinal);
     const entries = yield* store.page({
       key,
-      beforeOrdinal: decodeCursor(input.cursor),
+      beforeOrdinal:
+        boundary !== null && boundary.key === cursor?.key ? boundary.lastOrdinal : null,
       limit: limit + 1,
     });
     const syncing = yield* FiberMap.has(syncs, key);
