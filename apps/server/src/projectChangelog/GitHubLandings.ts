@@ -326,6 +326,10 @@ const make = Effect.gen(function* () {
       (rows) => rows[0] ?? null,
     ),
   );
+  const getHasReleases = conditionalGet(
+    "changelogReleases",
+    decodeJson("changelogReleases", Schema.Array(Schema.Unknown), (rows) => rows.length > 0),
+  );
   const getLatestRelease = conditionalGet(
     "changelogLatestRelease",
     decodeJson("changelogLatestRelease", RestRelease, (release) => release),
@@ -465,6 +469,11 @@ const make = Effect.gen(function* () {
   });
 
   const observeRelease = Effect.fnUntraced(function* (repository: GitHubRepository) {
+    // Without releases, `releases/latest` is a 404 every sync, which no ETag revalidates; the
+    // list answers [] with one, so asking it first costs a 304 while nothing changes.
+    if (!(yield* getHasReleases(repository, repoPath(repository, "releases?per_page=1")))) {
+      return { _tag: "Absent" } as const;
+    }
     const release = yield* getLatestRelease(repository, repoPath(repository, "releases/latest"));
     const sha = yield* getRefSha(
       repository,
@@ -487,8 +496,8 @@ const make = Effect.gen(function* () {
     return { _tag: "Found", value: signal } as const;
   });
 
-  // `releases/latest` answers 404 when nothing is published; any other failure is a source that
-  // could not be read this time.
+  // `releases/latest` answers 404 when only drafts and prereleases exist; any other failure is a
+  // source that could not be read this time.
   const observe = <A>(
     effect: Effect.Effect<SourceObservation<A>, GitHubLandingsError>,
   ): Effect.Effect<SourceObservation<A>> =>

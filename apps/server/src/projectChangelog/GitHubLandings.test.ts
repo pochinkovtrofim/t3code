@@ -304,6 +304,7 @@ describe("GitHubLandings", () => {
           transient_environment: true,
         })),
       },
+      [upstreamPath("/releases?per_page=1")]: { body: [shapes.releaseLatest] },
       [upstreamPath("/releases/latest")]: { body: shapes.releaseLatest },
       [upstreamPath("/commits/v0.1.0")]: { body: releaseSha },
     });
@@ -352,6 +353,32 @@ describe("GitHubLandings", () => {
       });
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect(
+    "revalidates a repository's lack of releases instead of reading a 404 each sync",
+    () => {
+      const { layer, requests } = harness({
+        [upstreamPath("/deployments?per_page=30")]: { body: [] },
+        [upstreamPath("/releases?per_page=1")]: { body: [] },
+        [upstreamPath("/tags?per_page=100")]: { body: shapes.tags },
+      });
+      return Effect.gen(function* () {
+        const landings = yield* GitHubLandings.GitHubLandings;
+        const first = yield* landings.readProduction(upstream);
+        const second = yield* landings.readProduction(upstream);
+        assert.deepStrictEqual(first.release, { _tag: "Absent" });
+        assert.deepStrictEqual(second, first);
+        const releaseReads = requests.filter((request) => request.url.includes("releases"));
+        assert.deepStrictEqual(
+          releaseReads.map((request) => [request.url, request.headers["if-none-match"] ?? null]),
+          [
+            [upstreamPath("/releases?per_page=1"), null],
+            [upstreamPath("/releases?per_page=1"), `"${upstreamPath("/releases?per_page=1")}"`],
+          ],
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect("reads the merge base from a comparison", () => {
     const { layer } = harness({
