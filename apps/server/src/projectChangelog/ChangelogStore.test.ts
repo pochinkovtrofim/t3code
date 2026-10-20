@@ -172,26 +172,46 @@ layer("ChangelogStore", (it) => {
     }),
   );
 
-  it.effect("rewrites an unresolved commit once resolved, but never a resolved one", () =>
+  it.effect("keeps commits ungrouped until they join a unit, then never rewrites them", () =>
     Effect.gen(function* () {
       const store = yield* fresh;
+      // "c" resolved, but it waits behind "b" so a unit never forms across an unresolved commit.
       yield* store.applySync(
         syncWrite([
           landed("a", { _tag: "Direct" }),
           landed("b", { _tag: "Unresolved", attempts: 1 }),
+          landed("c", { _tag: "PullRequest", pullRequest: pull(7) }),
         ]),
       );
+      const ungrouped = yield* store.ungroupedCommits(key);
       assert.deepEqual(
-        (yield* store.unresolvedCommits(key)).map((commit) => [commit.sha, commit.attempts]),
-        [["b", 1]],
+        ungrouped.map((commit) => [commit.sha, commit.ordinal, commit.association._tag]),
+        [
+          ["b", 2, "Unresolved"],
+          ["c", 3, "PullRequest"],
+        ],
       );
+      assert.deepEqual(ungrouped[1]!.association, { _tag: "PullRequest", pullRequest: pull(7) });
 
-      const resolved = syncWrite([
-        landed("a", { _tag: "Unresolved", attempts: 0 }),
+      const resolved = [
+        landed("a", { _tag: "Direct" }),
         landed("b", { _tag: "Direct" }),
-      ]);
-      yield* store.applySync(resolved);
-      assert.deepEqual(yield* store.unresolvedCommits(key), []);
+        landed("c", { _tag: "PullRequest", pullRequest: pull(7) }),
+      ];
+      yield* store.applySync(syncWrite(resolved));
+      assert.deepEqual(yield* store.ungroupedCommits(key), []);
+      const grouped = [
+        ["pr:7", "pending"],
+        ["push:a", "pending"],
+      ];
+      assert.deepEqual(yield* pageKeys(store), grouped);
+
+      // A stale replay that sees "a" unresolved again cannot ungroup anything.
+      yield* store.applySync(
+        syncWrite([landed("a", { _tag: "Unresolved", attempts: 0 }), ...resolved.slice(1)]),
+      );
+      assert.deepEqual(yield* store.ungroupedCommits(key), []);
+      assert.deepEqual(yield* pageKeys(store), grouped);
     }),
   );
 

@@ -68,8 +68,8 @@ const DDL = [
    )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS fork_changelog_commits_ordinal
      ON fork_changelog_commits (repository_key, ordinal)`,
-  `CREATE INDEX IF NOT EXISTS fork_changelog_commits_unresolved
-     ON fork_changelog_commits (repository_key, ordinal) WHERE association = 'unresolved'`,
+  `CREATE INDEX IF NOT EXISTS fork_changelog_commits_ungrouped
+     ON fork_changelog_commits (repository_key, ordinal) WHERE unit_key IS NULL`,
   `CREATE TABLE IF NOT EXISTS fork_changelog_entries (
      repository_key TEXT NOT NULL,
      unit_key TEXT NOT NULL,
@@ -180,6 +180,8 @@ const CommitJson = Schema.Struct({
   authorKey: Schema.String,
   authorDisplay: Schema.String,
   committedAt: Schema.Number,
+  /** Kept until the commit is grouped, so a deferred commit regroups without a lookup. */
+  pullRequest: Schema.optionalKey(MergedPullRequestJson),
 });
 
 const ThreadRef = Schema.Struct({ threadId: ThreadId, projectId: ProjectId, title: Schema.String });
@@ -224,17 +226,6 @@ export interface EntryRow {
   readonly unit: ChangeUnit;
   readonly summary: EntrySummary;
   readonly threadRefs: ReadonlyArray<ThreadRef>;
-}
-
-/** An unresolved commit as stored, with the lookups it has failed so far. */
-export interface StoredUnresolvedCommit {
-  readonly ordinal: number;
-  readonly sha: string;
-  readonly subject: string;
-  readonly authorKey: string;
-  readonly authorDisplay: string;
-  readonly committedAt: number;
-  readonly attempts: number;
 }
 
 /**
@@ -282,9 +273,13 @@ export class ChangelogStore extends Context.Service<
     ) => Effect.Effect<Option.Option<RepositoryRow>, ChangelogStoreError>;
     /** The newest live unit, which new landings may extend. */
     readonly tail: (key: RepositoryKey) => Effect.Effect<ChangeUnit | null, ChangelogStoreError>;
-    readonly unresolvedCommits: (
+    /**
+     * Commits in no unit yet, oldest first: unresolved ones and every commit after the first
+     * unresolved one, which grouping deferred. Parents are not stored.
+     */
+    readonly ungroupedCommits: (
       key: RepositoryKey,
-    ) => Effect.Effect<ReadonlyArray<StoredUnresolvedCommit>, ChangelogStoreError>;
+    ) => Effect.Effect<ReadonlyArray<Landing>, ChangelogStoreError>;
     readonly ordinalOf: (
       key: RepositoryKey,
       sha: string,
@@ -532,33 +527,41 @@ const make = Effect.gen(function* () {
     Effect.mapError(sqlError("getChangelogTail")),
   );
 
-  const unresolvedCommits: ChangelogStore["Service"]["unresolvedCommits"] = Effect.fn(
-    "ChangelogStore.unresolvedCommits",
+  const ungroupedCommits: ChangelogStore["Service"]["ungroupedCommits"] = Effect.fn(
+    "ChangelogStore.ungroupedCommits",
   )(
     function* (key) {
       const rows = yield* sql<{
         readonly ordinal: number;
         readonly sha: string;
+        readonly association: "pull-request" | "direct" | "unresolved";
         readonly attempts: number;
         readonly commitJson: string;
       }>`
-        SELECT ordinal, sha, association_attempts AS attempts, commit_json AS "commitJson"
+        SELECT ordinal, sha, association, association_attempts AS attempts,
+          commit_json AS "commitJson"
         FROM fork_changelog_commits
-        WHERE repository_key = ${key} AND association = 'unresolved'
+        WHERE repository_key = ${key} AND unit_key IS NULL
         ORDER BY ordinal ASC
       `;
       return yield* Effect.forEach(rows, (row) =>
         commitJson.decode(row.commitJson).pipe(
-          Effect.map((commit) => ({
+          Effect.map(({ pullRequest, ...commit }): Landing => ({
             ...commit,
-            ordinal: row.ordinal,
             sha: row.sha,
-            attempts: row.attempts,
+            ordinal: row.ordinal,
+            parentShas: [],
+            association:
+              row.association === "pull-request" && pullRequest !== undefined
+                ? { _tag: "PullRequest", pullRequest }
+                : row.association === "direct"
+                  ? { _tag: "Direct" }
+                  : { _tag: "Unresolved", attempts: row.attempts },
           })),
         ),
       );
     },
-    Effect.mapError(sqlError("listUnresolvedChangelogCommits")),
+    Effect.mapError(sqlError("listUngroupedChangelogCommits")),
   );
 
   const ordinalOf: ChangelogStore["Service"]["ordinalOf"] = Effect.fn("ChangelogStore.ordinalOf")(
@@ -579,7 +582,7 @@ const make = Effect.gen(function* () {
           ? "direct"
           : "unresolved";
     const attempts = landing.association._tag === "Unresolved" ? landing.association.attempts : 0;
-    // A resolved commit is a fact that never changes; only an unresolved one is rewritten.
+    // A grouped commit never changes; an ungrouped one is rewritten as it resolves and groups.
     return sql`
       INSERT INTO fork_changelog_commits (
         repository_key, sha, ordinal, association, association_attempts, unit_key, commit_json
@@ -591,13 +594,17 @@ const make = Effect.gen(function* () {
           authorKey: landing.authorKey,
           authorDisplay: landing.authorDisplay,
           committedAt: landing.committedAt,
+          ...(landing.association._tag === "PullRequest"
+            ? { pullRequest: landing.association.pullRequest }
+            : {}),
         })}
       )
       ON CONFLICT (repository_key, sha) DO UPDATE SET
         association = excluded.association,
         association_attempts = excluded.association_attempts,
-        unit_key = excluded.unit_key
-      WHERE fork_changelog_commits.association = 'unresolved'
+        unit_key = excluded.unit_key,
+        commit_json = excluded.commit_json
+      WHERE fork_changelog_commits.unit_key IS NULL
     `;
   };
 
@@ -875,7 +882,7 @@ const make = Effect.gen(function* () {
     ensureRepository,
     getRepository,
     tail,
-    unresolvedCommits,
+    ungroupedCommits,
     ordinalOf,
     applySync,
     setProduction,

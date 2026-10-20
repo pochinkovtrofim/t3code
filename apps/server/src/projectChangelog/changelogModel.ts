@@ -29,26 +29,44 @@ export function repositoryKeyOf(host: string, fullName: string): RepositoryKey {
   return `${host}/${fullName}`.toLowerCase() as RepositoryKey;
 }
 
+function gitHubRepositoryOf(
+  canonicalKey: string,
+  display: { readonly owner?: string | undefined; readonly name?: string | undefined },
+  webUrl: string | undefined,
+): GitHubRepository | null {
+  const [host, owner, name, ...rest] = canonicalKey.toLowerCase().split("/");
+  if (!host || !owner || !name || rest.length > 0) return null;
+  // The canonical key is lower-cased; keep the remote's own casing for display.
+  const displayOwner = display.owner?.toLowerCase() === owner ? display.owner : owner;
+  const displayName = display.name?.toLowerCase() === name ? display.name : name;
+  return {
+    key: repositoryKeyOf(host, `${owner}/${name}`),
+    host,
+    owner: displayOwner,
+    name: displayName,
+    webUrl: webUrl ?? `https://${host}/${displayOwner}/${displayName}`,
+  };
+}
+
+/**
+ * The repository whose default branch is the project's changelog. A checkout with both an
+ * `upstream` and an `origin` remote is a fork: its own work lands on `origin`, which is also the
+ * repository the sidebar groups it under (`repositoryGroupingKeyOf`).
+ */
 export function resolveGitHubRepository(
   identity: RepositoryIdentity | null | undefined,
 ): RepositoryResolution {
   if (identity == null) return { _tag: "NoRepository" };
   if (identity.provider !== "github") return { _tag: "NotGitHub" };
-  const [host, owner, name, ...rest] = identity.canonicalKey.toLowerCase().split("/");
-  if (!host || !owner || !name || rest.length > 0) return { _tag: "NotGitHub" };
-  // The canonical key is lower-cased; keep the remote's own casing for display.
-  const displayOwner = identity.owner?.toLowerCase() === owner ? identity.owner : owner;
-  const displayName = identity.name?.toLowerCase() === name ? identity.name : name;
-  return {
-    _tag: "GitHub",
-    repository: {
-      key: repositoryKeyOf(host, `${owner}/${name}`),
-      host,
-      owner: displayOwner,
-      name: displayName,
-      webUrl: identity.webUrl ?? `https://${host}/${displayOwner}/${displayName}`,
-    },
-  };
+  const origin = identity.origin;
+  const host = identity.canonicalKey.toLowerCase().split("/", 1)[0];
+  if (origin !== undefined && origin.canonicalKey.toLowerCase().startsWith(`${host}/`)) {
+    const [owner, name] = (origin.displayName ?? "").split("/");
+    const repository = gitHubRepositoryOf(origin.canonicalKey, { owner, name }, undefined);
+    if (repository !== null) return { _tag: "GitHub", repository };
+  }
+  const repository = gitHubRepositoryOf(identity.canonicalKey, identity, identity.webUrl);
+  return repository === null ? { _tag: "NotGitHub" } : { _tag: "GitHub", repository };
 }
 
 export interface LandedCommit {

@@ -113,6 +113,33 @@ describe("resolveGitHubRepository", () => {
     });
   });
 
+  it("reads a fork's own repository, not the upstream it tracks", () => {
+    const fork = identity({
+      canonicalKey: "github.com/pingdotgg/t3code",
+      owner: "pingdotgg",
+      name: "t3code",
+      origin: {
+        canonicalKey: "github.com/pochinkovtrofim/t3code",
+        displayName: "PochinkovTrofim/t3code",
+      },
+    });
+    expect(resolveGitHubRepository(fork)).toEqual({
+      _tag: "GitHub",
+      repository: {
+        key: "github.com/pochinkovtrofim/t3code",
+        host: "github.com",
+        owner: "PochinkovTrofim",
+        name: "t3code",
+        webUrl: "https://github.com/PochinkovTrofim/t3code",
+      },
+    });
+    // An origin on another host is not the same GitHub, so the identity itself is read.
+    const mirrored = identity({ origin: { canonicalKey: "gitlab.com/acme/web" } });
+    expect(resolveGitHubRepository(mirrored)).toMatchObject({
+      repository: { key: "github.com/acme/web" },
+    });
+  });
+
   it("tells a missing remote apart from a host the changelog cannot read", () => {
     expect(resolveGitHubRepository(null)._tag).toBe("NoRepository");
     expect(
