@@ -23,6 +23,7 @@ import {
   type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
 import {
+  capChangelogTitle,
   type ChangelogPromptUnit,
   changelogUnitPromptBytes,
   generateChangelogSummariesWith,
@@ -860,7 +861,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
           kind: source.kind,
           title:
             (summary.state === "unavailable" ? null : summary.title)?.trim() ||
-            fallbackTitle(source).trim() ||
+            capChangelogTitle(fallbackTitle(source)) ||
             "Untitled change",
           summary: summary.state === "unavailable" ? null : summary.body,
           category: summary.state === "unavailable" ? null : summary.category,

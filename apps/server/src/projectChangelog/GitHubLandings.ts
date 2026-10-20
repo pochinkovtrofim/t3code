@@ -40,6 +40,11 @@ const DEPLOYMENT_CANDIDATES = 5;
 const CACHED_ANSWERS_PER_OPERATION = 256;
 const LOOKUP_CONCURRENCY = 4;
 const SHA_ACCEPT = "application/vnd.github.sha";
+// GitHub text has no useful bound (a commit's first line can be a megabyte), and it reaches
+// every page, watch and MCP answer, so it is cut before storage.
+const MAX_SUBJECT_CHARS = 200;
+const MAX_PULL_TITLE_CHARS = 256;
+const MAX_AUTHOR_CHARS = 100;
 
 export class GitHubLandingsDecodeError extends Schema.TaggedError<GitHubLandingsDecodeError>()(
   "GitHubLandingsDecodeError",
@@ -177,14 +182,22 @@ const RestTag = Schema.Struct({
 
 const RestCompare = Schema.Struct({ merge_base_commit: Schema.Struct({ sha: Schema.String }) });
 
+/** Trimmed and cut to `maxChars`; null when nothing is left, so a blank name falls through. */
+function bounded(text: string | null | undefined, maxChars: number): string | null {
+  const value = (text ?? "").trim().slice(0, maxChars).trimEnd();
+  return value === "" ? null : value;
+}
+
 function toLandedCommit(commit: typeof RestCommit.Type): LandedCommit {
-  const author = commit.commit.author;
+  const login = bounded(commit.author?.login, MAX_AUTHOR_CHARS);
+  const name = bounded(commit.commit.author?.name, MAX_AUTHOR_CHARS);
+  const email = bounded(commit.commit.author?.email, MAX_AUTHOR_CHARS);
   return {
     sha: commit.sha,
     parentShas: commit.parents.map((parent) => parent.sha),
-    subject: (commit.commit.message.split("\n", 1)[0] ?? "").trim(),
-    authorKey: commit.author?.login ?? author?.email ?? author?.name ?? "unknown",
-    authorDisplay: commit.author?.login ?? author?.name ?? author?.email ?? "unknown",
+    subject: bounded(commit.commit.message.split("\n", 1)[0], MAX_SUBJECT_CHARS) ?? "",
+    authorKey: login ?? email ?? name ?? "unknown",
+    authorDisplay: login ?? name ?? email ?? "unknown",
     committedAt: Date.parse(commit.commit.committer?.date ?? "") || 0,
   };
 }
@@ -198,10 +211,10 @@ function toMergedPullRequest(
     repository: (
       pull.base.repo?.full_name ?? `${repository.owner}/${repository.name}`
     ).toLowerCase(),
-    title: pull.title.trim(),
+    title: bounded(pull.title, MAX_PULL_TITLE_CHARS) ?? "",
     bodyExcerpt: (pull.body ?? "").slice(0, PULL_REQUEST_BODY_EXCERPT_CHARS),
     url: pull.html_url,
-    authorLogin: pull.user?.login ?? null,
+    authorLogin: bounded(pull.user?.login, MAX_AUTHOR_CHARS),
     mergedAt: pull.merged_at === null ? null : Date.parse(pull.merged_at),
     mergeCommitSha: pull.merge_commit_sha,
     headRef: pull.head.ref,

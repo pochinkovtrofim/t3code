@@ -149,6 +149,11 @@ function capAtWord(text: string, maxChars: number): string {
   return `${(lastSpace > maxChars / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
+/** A title the model did not write, such as a pull request title, held to the same cap. */
+export function capChangelogTitle(text: string): string {
+  return capAtWord(singleLine(text), MAX_TITLE_CHARS);
+}
+
 function sanitizeTitle(raw: string): string {
   // Bounded before the suffix pattern so its backtracking stays trivial.
   const title = singleLine(raw)

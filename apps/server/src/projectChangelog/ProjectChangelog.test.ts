@@ -435,6 +435,23 @@ describe("ProjectChangelog", () => {
     }).pipe(Effect.provide(layer), atNow);
   });
 
+  it.effect("caps a title the model has not written yet like one it wrote", () => {
+    const { github, model, layer } = harness();
+    model.state.failure = "fails";
+    github.state.commits.push(
+      commit("c5", "c4", NOW - 10 * MINUTE, "dave", "word ".repeat(40).trim()),
+    );
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const [newest] = (yield* changelog.read({ projectId: p1 })).entries;
+      assert.strictEqual(newest?.id, "push:c5");
+      assert.strictEqual(newest?.summaryState, "pending");
+      assert.isAtMost(newest?.title.length ?? 0, 80);
+      assert.isTrue(newest?.title.endsWith("…"));
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
   it.effect("keeps retrying an entry the model answered twice instead of giving up on it", () => {
     const { model, layer } = harness();
     model.state.contested = new Set(["pr:8"]);

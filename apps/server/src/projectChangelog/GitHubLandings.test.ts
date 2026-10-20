@@ -161,6 +161,48 @@ describe("GitHubLandings", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("cuts unbounded repository text and skips a blank author name", () => {
+    const head = shapes.commits[0]!;
+    const { layer } = harness({
+      [forkPath(`/commits?sha=${headSha}&per_page=100&page=1`)]: {
+        body: [
+          {
+            ...head,
+            author: null,
+            commit: {
+              ...head.commit,
+              message: `${"x".repeat(1_000_000)}\n\nBody`,
+              author: { name: " ", email: "dev@example.com", date: head.commit.author.date },
+            },
+          },
+        ],
+      },
+      [upstreamPath(
+        "/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=100&page=1",
+      )]: { body: [{ ...shapes.closedPulls[0]!, title: "t".repeat(100_000) }] },
+    });
+    return Effect.gen(function* () {
+      const landings = yield* GitHubLandings.GitHubLandings;
+      const { chain } = yield* landings.readHistory({
+        repository: fork,
+        headSha,
+        stopAtSha: null,
+        since: null,
+        maxCommits: 10,
+      });
+      const [commit] = chain;
+      assert.strictEqual(commit?.subject.length, 200);
+      assert.strictEqual(commit?.authorDisplay, "dev@example.com");
+      assert.strictEqual(commit?.authorKey, "dev@example.com");
+      const [pull] = yield* landings.readMergedPulls({
+        repository: upstream,
+        defaultBranch: "main",
+        since: NOW,
+      });
+      assert.strictEqual(pull?.title.length, 256);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("finds the parent's pull request for a fork's commit", () => {
     const { layer } = harness(forkRoutes);
     return Effect.gen(function* () {
