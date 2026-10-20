@@ -93,6 +93,9 @@ if (process.argv.includes("--version")) {
 
 if (resolveDesktopForkIdentity(Electron.app.getVersion()) !== undefined) {
   Object.assign(process.env, resolveDesktopForkEnvironment(NodeOS.homedir()));
+  // Clerk's bridge makes the app the OS default t3code:// handler as it starts,
+  // which would take those links from the upstream install.
+  Electron.app.setAsDefaultProtocolClient = () => false;
 }
 
 const layerDesktopEnvironment = Layer.unwrap(
