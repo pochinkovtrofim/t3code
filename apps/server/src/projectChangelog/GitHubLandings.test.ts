@@ -431,6 +431,48 @@ describe("GitHubLandings", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("asks the newest production deployment's environment when there are many", () => {
+    const [deployed] = shapes.deployments;
+    const [status] = shapes.deploymentStatuses;
+    const environments = ["prod-1", "prod-2", "prod-3", "prod-4", "prod-5", "prod-6"];
+    const deploymentIn = (environment: string, index: number) => ({
+      ...deployed!,
+      id: index + 1,
+      sha: String(index + 1).repeat(40),
+      environment,
+      production_environment: true,
+    });
+    const newest = deploymentIn("prod-6", 5);
+    const { layer } = harness({
+      [upstreamPath("/environments?per_page=100")]: { body: environmentList(environments) },
+      [upstreamPath("/deployments?per_page=30")]: { body: [newest] },
+      ...Object.fromEntries(
+        environments.flatMap((environment, index) => [
+          [
+            upstreamPath(`/deployments?environment=${environment}&per_page=5`),
+            { body: [deploymentIn(environment, index)] },
+          ],
+          [
+            upstreamPath(`/deployments/${index + 1}/statuses?per_page=1`),
+            { body: [{ ...status!, created_at: `2026-10-20T0${index}:00:00Z` }] },
+          ],
+        ]),
+      ),
+    });
+    return Effect.gen(function* () {
+      const landings = yield* GitHubLandings.GitHubLandings;
+      const { deployment } = yield* landings.readProduction({
+        repository: upstream,
+        previousEnvironment: "prod-1",
+      });
+      assert(deployment._tag === "Found");
+      assert.deepStrictEqual(
+        [deployment.value.environment, deployment.value.sha],
+        ["prod-6", newest.sha],
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect.each([403, 500])(
     "never calls production absent when the environment list answers %s",
     (status) => {

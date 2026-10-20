@@ -537,16 +537,19 @@ const make = Effect.gen(function* () {
       repository,
       repoPath(repository, `deployments?per_page=${RECENT_DEPLOYMENTS}`),
     );
+    // Only MAX_ENVIRONMENT_QUERIES are asked, so the environments of the newest production
+    // deployments go first: one of them holds the newest deployment unless RECENT_DEPLOYMENTS newer
+    // ones bury it.
+    // The environment list carries no production flag; the newest deployments do.
     const candidates = [
       ...new Set([
+        ...recent.production.map((deployment) => deployment.environment),
         ...(previousEnvironment === null ? [] : [previousEnvironment]),
         ...(listed === null
           ? PRODUCTION_ENVIRONMENT_NAMES
           : listed.names.filter((name) =>
               isProductionEnvironment({ name, productionFlag: null, transient: null }),
             )),
-        // The environment list carries no production flag; the newest deployments do.
-        ...recent.production.map((deployment) => deployment.environment),
       ]),
     ];
     const asked = candidates.slice(0, MAX_ENVIRONMENT_QUERIES);
