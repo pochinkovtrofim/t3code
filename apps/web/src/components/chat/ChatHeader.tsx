@@ -1,6 +1,7 @@
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
+  type ProviderDriverKind,
   type ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -36,6 +37,7 @@ import {
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
 import { useClientSettings } from "../../hooks/useSettings";
+import { ProjectThreadHeaderBadges } from "./ProjectThreadHeaderBadges"; // fork: project changelog
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -48,6 +50,7 @@ interface ChatHeaderProps {
   rightPanelOpen: boolean;
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
+  providerDriver: ProviderDriverKind; // fork: project changelog
 }
 
 export function resolveRenameCommit(input: {
@@ -76,6 +79,7 @@ export const ChatHeader = memo(function ChatHeader({
   rightPanelOpen,
   onNewThreadInProject,
   onOpenProjectSettings,
+  providerDriver, // fork: project changelog
 }: ChatHeaderProps) {
   const activeProjectName = activeProject?.isScratch ? "No project" : activeProject?.title;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
@@ -396,6 +400,13 @@ export const ChatHeader = memo(function ChatHeader({
               <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
             </Tooltip>
           )}
+          {/* fork: project changelog */}
+          <ProjectThreadHeaderBadges
+            environmentId={activeThreadEnvironmentId}
+            threadId={activeThreadId}
+            projectId={activeProject?.id ?? null}
+            driver={providerDriver}
+          />
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
     </div>
