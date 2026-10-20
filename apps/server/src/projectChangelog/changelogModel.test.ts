@@ -195,11 +195,32 @@ describe("associateLandings", () => {
   const squash = pull(10, { mergeCommitSha: "s1" });
   const chain = [commit("s1", []), commit("r1", []), commit("r2", []), commit("d1", [])];
 
-  it("matches squash merges from the list and looks up only the rest, oldest first", () => {
-    expect(commitsNeedingLookup({ commits: chain, mergedPulls: [squash], budget: 2 })).toEqual([
-      "r1",
-      "r2",
+  const listed = (...pullRequests: ReadonlyArray<MergedPullRequest>) => ({
+    pullRequests,
+    coveredFrom: null,
+  });
+
+  it("matches squash merges from the list and looks up the rest, newest first", () => {
+    expect(
+      commitsNeedingLookup({ commits: chain, mergedPulls: listed(squash), budget: 2 }),
+    ).toEqual(["d1", "r2"]);
+  });
+
+  it("calls a commit older than the list's coverage a direct push without asking", () => {
+    const old = commit("old", [], { at: T0 - MINUTE });
+    const recent = commit("recent", [], { at: T0 + MINUTE });
+    const mergedPulls = { pullRequests: [squash], coveredFrom: T0 };
+    expect(commitsNeedingLookup({ commits: [old, recent], mergedPulls, budget: 10 })).toEqual([
+      "recent",
     ]);
+    expect(
+      associateLandings({
+        commits: [old, recent],
+        defaultBranch: "main",
+        mergedPulls,
+        lookups: new Map(),
+      }).map((value) => value.association),
+    ).toEqual([{ _tag: "Direct" }, { _tag: "Unresolved", attempts: 0 }]);
   });
 
   it("uses lookups for rebase merges and direct pushes and leaves out-of-budget commits unresolved", () => {
@@ -211,7 +232,7 @@ describe("associateLandings", () => {
     const associated = associateLandings({
       commits: [...chain, commit("later", [])],
       defaultBranch: "main",
-      mergedPulls: [squash],
+      mergedPulls: listed(squash),
       lookups: new Map([...lookups, ["d1", { _tag: "Answered", pullRequests: [] }]]),
     });
     expect(associated.map((value) => value.association)).toEqual([
@@ -228,7 +249,7 @@ describe("associateLandings", () => {
       associateLandings({
         commits: [commit("x", [])],
         defaultBranch: "main",
-        mergedPulls: [],
+        mergedPulls: listed(),
         lookups: new Map([["x", { _tag: "Failed" }]]),
         previousAttempts: new Map([["x", previous]]),
       })[0]!.association;
@@ -246,7 +267,7 @@ describe("groupChangeUnits", () => {
     const rebased = pull(7);
     const { units, deferred } = groupChangeUnits({
       repository,
-      tail: null,
+      below: [],
       landings: positioned([
         viaPull("squash", pull(5)),
         viaPull("merge", pull(6)),
@@ -268,7 +289,7 @@ describe("groupChangeUnits", () => {
   it("groups direct pushes by author while commits stay under the gap apart", () => {
     const { units } = groupChangeUnits({
       repository,
-      tail: null,
+      below: [],
       landings: positioned([
         direct("p1", "alice", T0),
         direct("p2", "alice", T0 + 5 * MINUTE),
@@ -290,7 +311,7 @@ describe("groupChangeUnits", () => {
   it("keeps the last push group open until the gap passes, and settles a closed one at once", () => {
     const { units } = groupChangeUnits({
       repository,
-      tail: null,
+      below: [],
       landings: positioned([
         direct("p1", "alice", T0),
         viaPull("pr", pull(3)),
@@ -300,21 +321,56 @@ describe("groupChangeUnits", () => {
     expect(units.map((unit) => unit.settlesAt)).toEqual([T0, T0, T0 + MINUTE + PUSH_GROUP_GAP_MS]);
   });
 
-  it("never forms a unit across an unresolved commit", () => {
+  it("groups around an unresolved commit, holding back only the unit right above it", () => {
     const landings = positioned([
       direct("p1", "alice", T0),
       unresolved("u"),
       direct("p2", "alice", T0 + MINUTE),
+      viaPull("s", pull(9)),
+      direct("p3", "bob", T0 + 2 * MINUTE),
     ]);
-    const { units, deferred } = groupChangeUnits({ repository, tail: null, landings });
-    expect(keysOf(units)).toEqual([["push:p1", 1, 1, 1]]);
+    const { units, deferred } = groupChangeUnits({ repository, below: [], landings });
+    expect(keysOf(units)).toEqual([
+      ["push:p1", 1, 1, 1],
+      ["pr:9", 4, 4, 1],
+      ["push:p3", 5, 5, 1],
+    ]);
     expect(deferred.map((landing) => landing.sha)).toEqual(["u", "p2"]);
+  });
+
+  it("yields the same units once an unresolved commit resolves as if it never waited", () => {
+    const resolved = positioned([
+      direct("p1", "alice", T0),
+      direct("p2", "alice", T0 + MINUTE),
+      direct("p3", "alice", T0 + 2 * MINUTE),
+      viaPull("s", pull(9)),
+    ]);
+    const waiting = resolved.map((landing) =>
+      landing.sha === "p2"
+        ? { ...landing, association: { _tag: "Unresolved", attempts: 0 } as const }
+        : landing,
+    );
+    const first = groupChangeUnits({ repository, below: [], landings: waiting });
+    const stored = new Map(first.units.map((unit) => [unit.key, unit]));
+    const second = groupChangeUnits({
+      repository,
+      below: first.units.filter((unit) => unit.lastOrdinal === 1),
+      landings: resolved.filter((landing) =>
+        first.deferred.includes(waiting[landing.ordinal - 1]!),
+      ),
+      headOrdinal: 4,
+    });
+    for (const unit of second.units) stored.set(unit.key, unit);
+    expect([...stored.values()].toSorted((a, b) => a.firstOrdinal - b.firstOrdinal)).toEqual(
+      groupChangeUnits({ repository, below: [], landings: resolved }).units,
+    );
+    expect(keysOf(second.units)).toEqual([["push:p1", 1, 3, 3]]);
   });
 
   it("keys another repository's pull request apart from this repository's", () => {
     const { units } = groupChangeUnits({
       repository,
-      tail: null,
+      below: [],
       landings: positioned([viaPull("x", pull(5, { repository: "upstream/web" }))]),
     });
     expect(units[0]!.key).toBe("pr:upstream/web#5");
@@ -333,12 +389,16 @@ describe("groupChangeUnits", () => {
       direct("b1", "bob", T0 + 4 * MINUTE),
       direct("b2", "bob", T0 + 5 * MINUTE),
     ]);
-    const whole = groupChangeUnits({ repository, tail: null, landings: history }).units;
+    const whole = groupChangeUnits({ repository, below: [], landings: history }).units;
     for (let split = 1; split < history.length; split++) {
-      const first = groupChangeUnits({ repository, tail: null, landings: history.slice(0, split) });
+      const first = groupChangeUnits({ repository, below: [], landings: history.slice(0, split) });
       const stored = new Map(first.units.map((unit) => [unit.key, unit]));
-      const tail = first.units.at(-1) ?? null;
-      const second = groupChangeUnits({ repository, tail, landings: history.slice(split) });
+      const tail = first.units.at(-1);
+      const second = groupChangeUnits({
+        repository,
+        below: tail === undefined ? [] : [tail],
+        landings: history.slice(split),
+      });
       for (const unit of second.units) stored.set(unit.key, unit);
       expect(
         [...stored.values()].toSorted((a, b) => a.firstOrdinal - b.firstOrdinal),
@@ -350,12 +410,12 @@ describe("groupChangeUnits", () => {
   it("changes the content hash when a unit grows, so its summary is written again", () => {
     const one = groupChangeUnits({
       repository,
-      tail: null,
+      below: [],
       landings: positioned([direct("p1", "alice", T0)]),
     }).units[0]!;
     const grown = groupChangeUnits({
       repository,
-      tail: one,
+      below: [one],
       landings: positioned([direct("p2", "alice", T0 + MINUTE)], 1),
     }).units[0]!;
     expect(grown.key).toBe(one.key);

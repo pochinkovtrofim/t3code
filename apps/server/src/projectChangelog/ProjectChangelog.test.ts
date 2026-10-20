@@ -109,6 +109,7 @@ function makeGitHub() {
     calls: [] as Array<string>,
     previousEnvironments: [] as Array<string | null>,
     mergeBases: new Map<string, string>(),
+    pullsCoveredFrom: null as number | null,
     /** Holds every head read until released, so a test can act while a sync is in flight. */
     headGate: null as Gate | null,
     /** Head reads left that die, as a bug in reading or applying a sync would. */
@@ -148,7 +149,7 @@ function makeGitHub() {
       readMergedPulls: () =>
         Effect.sync(() => {
           state.calls.push("readMergedPulls");
-          return state.pulls;
+          return { pullRequests: state.pulls, coveredFrom: state.pullsCoveredFrom };
         }),
       lookupCommitPulls: (input) =>
         Effect.sync(() => {
@@ -570,6 +571,26 @@ describe("ProjectChangelog", () => {
       yield* Deferred.await(gate.entered);
       yield* Deferred.succeed(gate.release, undefined);
       yield* changelog.drain;
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("shows the newest landings while an older commit still waits for its lookup", () => {
+    const { github, layer } = harness();
+    github.state.lookups.set("c3", { _tag: "Failed" });
+    github.state.commits.push(commit("c5", "c4", NOW - 10 * MINUTE, "dave", "Tune the cache"));
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const page = yield* changelog.read({ projectId: p1 });
+      // #8 sits right on the waiting commit, so it waits too; everything above it shows.
+      assert.deepStrictEqual(
+        page.entries.map((entry) => entry.id),
+        ["push:c5", "pr:7", "push:c1"],
+      );
+      assert.deepStrictEqual(
+        github.state.calls.filter((call) => call.startsWith("lookup:")),
+        ["lookup:c5", "lookup:c3", "lookup:c1"],
+      );
     }).pipe(Effect.provide(layer), atNow);
   });
 

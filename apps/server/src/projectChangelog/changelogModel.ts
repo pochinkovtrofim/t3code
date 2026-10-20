@@ -97,6 +97,19 @@ export interface MergedPullRequest {
 
 export const PULL_REQUEST_BODY_EXCERPT_CHARS = 1_500;
 
+/** Pull requests merged into the default branch, newest first, as far back as one read went. */
+export interface MergedPullList {
+  readonly pullRequests: ReadonlyArray<MergedPullRequest>;
+  /**
+   * Every pull request merged since this time is in the list; null when the list reaches past
+   * every commit it was read for. The read stops after a few pages on a busy repository.
+   */
+  readonly coveredFrom: number | null;
+}
+
+const isCovered = (list: MergedPullList, commit: Pick<LandedCommit, "committedAt">) =>
+  list.coveredFrom === null || commit.committedAt >= list.coveredFrom;
+
 /** How a first-parent commit reached the default branch. */
 export type CommitAssociation =
   | { readonly _tag: "PullRequest"; readonly pullRequest: MergedPullRequest }
@@ -189,17 +202,18 @@ function mergedPullsBySha(
 }
 
 /**
- * The commits worth a `commits/{sha}/pulls` call: not matched by the merged-PR list, oldest
- * first so resolution advances contiguously from the cursor, at most `budget`.
+ * The commits worth a `commits/{sha}/pulls` call: not matched by the merged-PR list and inside
+ * its coverage, newest first so the head of the changelog resolves first, at most `budget`.
  */
 export function commitsNeedingLookup(input: {
-  readonly commits: ReadonlyArray<Pick<LandedCommit, "sha">>;
-  readonly mergedPulls: ReadonlyArray<MergedPullRequest>;
+  readonly commits: ReadonlyArray<Pick<LandedCommit, "sha" | "committedAt">>;
+  readonly mergedPulls: MergedPullList;
   readonly budget: number;
 }): ReadonlyArray<string> {
-  const bySha = mergedPullsBySha(input.mergedPulls);
+  const bySha = mergedPullsBySha(input.mergedPulls.pullRequests);
   return input.commits
-    .filter((commit) => !bySha.has(commit.sha))
+    .filter((commit) => !bySha.has(commit.sha) && isCovered(input.mergedPulls, commit))
+    .toReversed()
     .slice(0, input.budget)
     .map((commit) => commit.sha);
 }
@@ -207,21 +221,24 @@ export function commitsNeedingLookup(input: {
 /**
  * Matches each commit to the pull request that landed it. The merged-PR list catches squash and
  * merge commits through `mergeCommitSha`; `lookups` holds per-commit answers for the rest
- * (rebase merges, PRs outside the list window, a fork's commits from its parent).
+ * (rebase merges, a fork's commits from its parent). A commit older than the list's coverage
+ * that the list does not hold counts as a direct push without a lookup.
  */
 export function associateLandings(input: {
   readonly commits: ReadonlyArray<LandedCommit>;
   readonly defaultBranch: string;
-  readonly mergedPulls: ReadonlyArray<MergedPullRequest>;
+  readonly mergedPulls: MergedPullList;
   readonly lookups: ReadonlyMap<string, CommitPullsLookup>;
   readonly previousAttempts?: ReadonlyMap<string, number>;
 }): ReadonlyArray<AssociatedCommit> {
-  const bySha = mergedPullsBySha(input.mergedPulls);
+  const bySha = mergedPullsBySha(input.mergedPulls.pullRequests);
   return input.commits.map((commit): AssociatedCommit => {
     const listed = bySha.get(commit.sha);
     if (listed !== undefined) {
       return { ...commit, association: { _tag: "PullRequest", pullRequest: listed } };
     }
+    if (!isCovered(input.mergedPulls, commit))
+      return { ...commit, association: { _tag: "Direct" } };
     const attempts = input.previousAttempts?.get(commit.sha) ?? 0;
     const lookup = input.lookups.get(commit.sha);
     if (lookup === undefined) {
@@ -441,34 +458,60 @@ function finish(open: OpenUnit, closed: boolean): ChangeUnit {
  * - A direct landing joins the previous unit when that is a direct push by the same author, the
  *   ordinals are adjacent and the commit times are under PUSH_GROUP_GAP_MS apart. Otherwise it
  *   starts `push:<its sha>`.
- * - An Unresolved landing stops grouping: it and everything after it come back in `deferred`,
- *   because a unit formed across it could change key once it resolves.
+ * - An Unresolved landing is a hole: it and the unit directly above it come back in `deferred`,
+ *   since once the hole resolves it may join that unit and change its key. Units further up
+ *   are final, so the head of the changelog shows while older commits wait.
  *
- * Returns whole replacement units, the tail included once landings touch it, for an upsert keyed
- * by (repository, unit key).
+ * `landings` ascend by ordinal; a gap is history already grouped. `below` holds the stored
+ * units ending right under a landing after such a gap, which that landing may extend.
+ *
+ * Returns whole replacement units, a reopened stored unit included, for an upsert keyed by
+ * (repository, unit key).
  */
 export function groupChangeUnits(input: {
   readonly repository: GitHubRepository;
-  readonly tail: ChangeUnit | null;
+  readonly below: ReadonlyArray<ChangeUnit>;
   readonly landings: ReadonlyArray<Landing>;
+  /** The newest ordinal on record when it lies above every landing: the last unit is closed. */
+  readonly headOrdinal?: number;
 }): { readonly units: ReadonlyArray<ChangeUnit>; readonly deferred: ReadonlyArray<Landing> } {
+  const belowByEnd = new Map(input.below.map((unit) => [unit.lastOrdinal, unit]));
   const units: Array<ChangeUnit> = [];
-  let open: OpenUnit | null = null;
-  let deferred: ReadonlyArray<Landing> = [];
-  for (const [index, landing] of input.landings.entries()) {
+  const deferred: Array<Landing> = [];
+  let open: { readonly unit: OpenUnit; readonly held: Array<Landing> | null } | null = null;
+  let afterHole = false;
+  let previous: Landing | null = null;
+  const close = (closed: boolean) => {
+    if (open === null) return;
+    if (open.held === null) units.push(finish(open.unit, closed));
+    else deferred.push(...open.held);
+    open = null;
+  };
+  for (const landing of input.landings) {
+    const adjacent = previous !== null && previous.ordinal + 1 === landing.ordinal;
+    previous = landing;
     if (landing.association._tag === "Unresolved") {
-      deferred = input.landings.slice(index);
-      break;
-    }
-    if (open === null && index === 0 && input.tail !== null) open = openFrom(input.tail);
-    if (open !== null && joins(input.repository, open, landing)) {
-      extend(open, landing);
+      close(true);
+      deferred.push(landing);
+      afterHole = true;
       continue;
     }
-    if (open !== null) units.push(finish(open, true));
-    open = startUnit(input.repository, landing);
+    if (!adjacent) {
+      close(true);
+      afterHole = false;
+      const stored = belowByEnd.get(landing.ordinal - 1);
+      if (stored !== undefined) open = { unit: openFrom(stored), held: null };
+    }
+    if (open !== null && joins(input.repository, open.unit, landing)) {
+      extend(open.unit, landing);
+      open.held?.push(landing);
+      continue;
+    }
+    close(true);
+    open = { unit: startUnit(input.repository, landing), held: afterHole ? [landing] : null };
+    afterHole = false;
   }
-  if (open !== null) units.push(finish(open, false));
+  close(previous !== null && previous.ordinal < (input.headOrdinal ?? previous.ordinal));
   return { units, deferred };
 }
 

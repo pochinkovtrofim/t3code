@@ -22,6 +22,7 @@ import {
   type GitHubRepository,
   isProductionEnvironment,
   type LandedCommit,
+  type MergedPullList,
   type MergedPullRequest,
   pickLatestTag,
   PULL_REQUEST_BODY_EXCERPT_CHARS,
@@ -94,12 +95,12 @@ export class GitHubLandings extends Context.Service<
       { readonly chain: ReadonlyArray<LandedCommit>; readonly reachedCursor: boolean },
       GitHubLandingsError
     >;
-    /** Pull requests merged into `defaultBranch`, read back to about `since`. */
+    /** Pull requests merged into `defaultBranch`, read back to about `since` or a page budget. */
     readonly readMergedPulls: (input: {
       readonly repository: GitHubRepository;
       readonly defaultBranch: string;
       readonly since: number;
-    }) => Effect.Effect<ReadonlyArray<MergedPullRequest>, GitHubLandingsError>;
+    }) => Effect.Effect<MergedPullList, GitHubLandingsError>;
     /**
      * `commits/{sha}/pulls` for each sha. GitHub refusing the question about one commit is a
      * Failed lookup. A sha whose request never got an answer (rate limit, network, credential)
@@ -421,6 +422,7 @@ const make = Effect.gen(function* () {
     "GitHubLandings.readMergedPulls",
   )(function* (input) {
     const merged: Array<MergedPullRequest> = [];
+    let coveredFrom: number | null = null;
     for (let page = 1; page <= MAX_PULL_PAGES; page++) {
       const answer = yield* getClosedPulls(
         input.repository,
@@ -435,10 +437,12 @@ const make = Effect.gen(function* () {
         answer.oldestUpdatedAt === null ||
         answer.oldestUpdatedAt < input.since - PULL_LIST_SLACK_MS
       ) {
-        break;
+        return { pullRequests: merged, coveredFrom: null };
       }
+      // Sorted by update time, and a merge updates a pull request: none merged since is missing.
+      coveredFrom = answer.oldestUpdatedAt;
     }
-    return merged;
+    return { pullRequests: merged, coveredFrom };
   });
 
   const lookupCommitPulls: GitHubLandings["Service"]["lookupCommitPulls"] = Effect.fn(

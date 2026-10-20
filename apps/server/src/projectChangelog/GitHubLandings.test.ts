@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
@@ -194,7 +195,9 @@ describe("GitHubLandings", () => {
       assert.strictEqual(commit?.subject.length, 200);
       assert.strictEqual(commit?.authorDisplay, "dev@example.com");
       assert.strictEqual(commit?.authorKey, "dev@example.com");
-      const [pull] = yield* landings.readMergedPulls({
+      const {
+        pullRequests: [pull],
+      } = yield* landings.readMergedPulls({
         repository: upstream,
         defaultBranch: "main",
         since: NOW,
@@ -258,10 +261,43 @@ describe("GitHubLandings", () => {
         defaultBranch: "main",
         since: NOW,
       });
+      assert.isNull(merged.coveredFrom);
       assert.deepStrictEqual(
-        merged.map((pull) => [pull.number, pull.repository, pull.mergeCommitSha]),
+        merged.pullRequests.map((pull) => [pull.number, pull.repository, pull.mergeCommitSha]),
         shapes.closedPulls.map((pull) => [pull.number, "pingdotgg/t3code", pull.merge_commit_sha]),
       );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("says how far back the merged list reaches when its page budget runs out", () => {
+    const [template] = shapes.closedPulls;
+    const pageOf = (page: number) =>
+      Array.from({ length: 100 }, (_, index) => {
+        const age = (page - 1) * 100 + index;
+        return {
+          ...template!,
+          number: 1_000 + age,
+          updated_at: DateTime.formatIso(DateTime.makeUnsafe(NOW - age * 60_000)),
+        };
+      });
+    const pulls = (page: number) =>
+      upstreamPath(
+        `/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=100&page=${page}`,
+      );
+    const { layer } = harness({
+      [pulls(1)]: { body: pageOf(1) },
+      [pulls(2)]: { body: pageOf(2) },
+      [pulls(3)]: { body: pageOf(3) },
+    });
+    return Effect.gen(function* () {
+      const landings = yield* GitHubLandings.GitHubLandings;
+      const merged = yield* landings.readMergedPulls({
+        repository: upstream,
+        defaultBranch: "main",
+        since: NOW - 30 * 24 * 60 * 60_000,
+      });
+      assert.strictEqual(merged.pullRequests.length, 300);
+      assert.strictEqual(merged.coveredFrom, NOW - 299 * 60_000);
     }).pipe(Effect.provide(layer));
   });
 

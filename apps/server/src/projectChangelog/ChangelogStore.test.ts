@@ -63,7 +63,11 @@ const syncWrite = (
   } = {},
 ): ChangelogStore.SyncWrite => {
   const landings = assignOrdinals(options.base ?? 0, commits);
-  const { units } = groupChangeUnits({ repository, tail: options.tail ?? null, landings });
+  const { units } = groupChangeUnits({
+    repository,
+    below: options.tail === undefined || options.tail === null ? [] : [options.tail],
+    landings,
+  });
   const unitOf = new Map<string, ChangeUnit["key"]>();
   for (const unit of units) {
     for (let ordinal = unit.firstOrdinal; ordinal <= unit.lastOrdinal; ordinal++) {

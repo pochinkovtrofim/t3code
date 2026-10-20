@@ -86,8 +86,8 @@ export interface ProjectChangelogOptions {
   readonly maxSyncCommits?: number;
 }
 
-const DEFAULT_BACKFILL_MS = 30 * 24 * 60 * 60_000;
-const DEFAULT_MAX_SYNC_COMMITS = 500;
+const DEFAULT_BACKFILL_MS = 14 * 24 * 60 * 60_000;
+const DEFAULT_MAX_SYNC_COMMITS = 200;
 /** `commits/{sha}/pulls` calls per sync; the rest wait for the next one. */
 const LOOKUP_BUDGET = 30;
 /** First-parent commits a catch-up gathers before it re-reads the window instead. */
@@ -532,8 +532,19 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       yield* store.setProduction(key, production);
       return { backlog: behind };
     }
-    const tail = reset ? null : yield* store.tail(key);
-    const { units, deferred } = groupChangeUnits({ repository, tail, landings });
+    const batch = new Set(landings.map((landing) => landing.ordinal));
+    const below = reset
+      ? []
+      : yield* Effect.forEach(
+          landings.filter((landing) => !batch.has(landing.ordinal - 1)),
+          (landing) => store.unitEndingAt(key, landing.ordinal - 1),
+        );
+    const { units, deferred } = groupChangeUnits({
+      repository,
+      below: below.filter((unit) => unit !== null),
+      landings,
+      headOrdinal: base + fresh.length,
+    });
     const unitKeyOf = unitKeyByOrdinal(units);
     yield* store.applySync({
       key,

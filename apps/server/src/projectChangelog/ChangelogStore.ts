@@ -268,11 +268,14 @@ export class ChangelogStore extends Context.Service<
     readonly getRepository: (
       key: RepositoryKey,
     ) => Effect.Effect<Option.Option<RepositoryRow>, ChangelogStoreError>;
-    /** The newest live unit, which new landings may extend. */
-    readonly tail: (key: RepositoryKey) => Effect.Effect<ChangeUnit | null, ChangelogStoreError>;
+    /** The live unit whose last commit has this ordinal, which the next landing may extend. */
+    readonly unitEndingAt: (
+      key: RepositoryKey,
+      lastOrdinal: number,
+    ) => Effect.Effect<ChangeUnit | null, ChangelogStoreError>;
     /**
-     * Commits in no unit yet, oldest first: unresolved ones and every commit after the first
-     * unresolved one, which grouping deferred. Parents are not stored.
+     * Commits in no unit yet, oldest first: unresolved ones and the unit directly above each,
+     * which grouping deferred. Parents are not stored.
      */
     readonly ungroupedCommits: (
       key: RepositoryKey,
@@ -513,16 +516,17 @@ const make = Effect.gen(function* () {
     summary_category AS "summaryCategory", summary_attempts AS "summaryAttempts"
   `);
 
-  const tail: ChangelogStore["Service"]["tail"] = Effect.fn("ChangelogStore.tail")(
-    function* (key) {
+  const unitEndingAt: ChangelogStore["Service"]["unitEndingAt"] = Effect.fn(
+    "ChangelogStore.unitEndingAt",
+  )(
+    function* (key, lastOrdinal) {
       const [row] = yield* sql<EntrySqlRow>`
         SELECT ${entryColumns} FROM fork_changelog_entries
-        WHERE repository_key = ${key} AND removed_at IS NULL
-        ORDER BY last_ordinal DESC LIMIT 1
+        WHERE repository_key = ${key} AND removed_at IS NULL AND last_ordinal = ${lastOrdinal}
       `;
       return row === undefined ? null : (yield* decodeEntry(row)).unit;
     },
-    Effect.mapError(sqlError("getChangelogTail")),
+    Effect.mapError(sqlError("getChangelogUnitEndingAt")),
   );
 
   const ungroupedCommits: ChangelogStore["Service"]["ungroupedCommits"] = Effect.fn(
@@ -884,7 +888,7 @@ const make = Effect.gen(function* () {
   return ChangelogStore.of({
     ensureRepository,
     getRepository,
-    tail,
+    unitEndingAt,
     ungroupedCommits,
     ordinalOf,
     applySync,
