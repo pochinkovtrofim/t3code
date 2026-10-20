@@ -19,6 +19,7 @@ import {
   isNightlyDesktopVersion,
   resolveDefaultDesktopUpdateChannel,
 } from "../updates/updateChannels.ts";
+import { resolveDesktopForkIdentity } from "@t3tools/shared/desktopFork";
 import type { OtlpProtocol } from "@t3tools/shared/observability";
 
 export interface MakeDesktopEnvironmentInput {
@@ -106,6 +107,10 @@ export function resolveDesktopAppBranding(input: {
   readonly appVersion: string;
 }): DesktopAppBranding {
   const stageLabel = resolveDesktopAppStageLabel(input);
+  const fork = resolveDesktopForkIdentity(input.appVersion);
+  if (fork !== undefined) {
+    return { baseName: fork.productName, stageLabel, displayName: fork.productName };
+  }
   return {
     baseName: APP_BASE_NAME,
     stageLabel,
@@ -115,6 +120,8 @@ export function resolveDesktopAppBranding(input: {
 
 // Keep Chromium's encryption identity on the names shipped before branding changed.
 export function resolveDesktopSafeStorageName(appVersion: string): string {
+  const fork = resolveDesktopForkIdentity(appVersion);
+  if (fork !== undefined) return fork.productName;
   return resolveDefaultDesktopUpdateChannel(appVersion) === "nightly"
     ? "T3 Code (Nightly)"
     : "T3 Code (Alpha)";
@@ -193,6 +200,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     "applications",
   );
   const resourcesPath = input.resourcesPath;
+  const fork = resolveDesktopForkIdentity(input.appVersion);
 
   return DesktopEnvironment.of({
     path,
@@ -237,11 +245,13 @@ const make = Effect.fn("desktop.environment.make")(function* (
     otlpProtocol: config.otlpProtocol,
     branding,
     displayName,
-    appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
-      isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
+    appUserModelId: Option.getOrElse(
+      config.appUserModelIdOverride,
+      () => fork?.appId ?? (isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code"),
     ),
-    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment),
-    linuxWmClass: isDevelopment ? "t3code-dev" : "t3code",
+    linuxDesktopEntryName:
+      fork?.linuxDesktopEntryName ?? resolveLinuxDesktopEntryName(isDevelopment),
+    linuxWmClass: fork?.linuxWmClass ?? (isDevelopment ? "t3code-dev" : "t3code"),
     linuxApplicationsDir,
     appImagePath: config.appImagePath,
     defaultDesktopSettings: DesktopAppSettings.resolveDefaultDesktopSettings(input.appVersion),

@@ -277,7 +277,10 @@ const copySourceSlice = Effect.fn("copyDevDbSourceSlice")(function* (sourcePath:
   yield* sql`DETACH DATABASE src`;
 });
 
-const pruneSnapshot = Effect.fn("pruneDevDbSnapshot")(function* (input: RunMigrateDevDbInput) {
+const pruneSnapshot = Effect.fn("pruneDevDbSnapshot")(function* (
+  input: RunMigrateDevDbInput,
+  sourceScratchRoot: string,
+) {
   const sql = yield* SqlClient.SqlClient;
 
   // Threads the server would resume or start work on by itself. Its own
@@ -325,6 +328,7 @@ const pruneSnapshot = Effect.fn("pruneDevDbSnapshot")(function* (input: RunMigra
       GROUP BY project_id
     ) q ON q.project_id = p.project_id
     WHERE p.deleted_at IS NULL
+      AND p.workspace_root <> ${sourceScratchRoot}
     ORDER BY (q.last_stopped_at IS NULL) ASC,
       COALESCE(q.last_stopped_at, p.updated_at) DESC
     LIMIT ${input.projects}`;
@@ -510,7 +514,10 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
     yield* Console.log(
       `Pruning to ${input.projects} projects, ${input.threadsPerProject} stopped threads each...`,
     );
-    const result = yield* pruneSnapshot(input).pipe(
+    // fork: the source's scratch project points into the source home, which the
+    // seeded home does not treat as scratch; it recreates its own on demand.
+    const sourceScratchRoot = path.join(path.dirname(path.dirname(sourcePath)), "scratch");
+    const result = yield* pruneSnapshot(input, sourceScratchRoot).pipe(
       Effect.provide(
         ProjectionStore.layer.pipe(
           Layer.provideMerge(NodeSqliteClient.layer({ filename: snapshotPath })),
