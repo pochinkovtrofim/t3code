@@ -230,7 +230,12 @@ describe("T3 tool calls in a read-only orchestrating turn", () => {
     serverName: "t3-code",
     threadId: "provider-thread-1",
     turnId: "turn-1",
-    _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"] },
+    _meta: {
+      codex_approval_kind: "mcp_tool_call",
+      persist: ["session", "always"],
+      tool_description: "Create an ordinary TOP-LEVEL thread.",
+      tool_params: { title: "Append to NOTES.md", message: "Append a line to NOTES.md." },
+    },
     requestedSchema: { type: "object", properties: {} },
   } satisfies EffectCodexSchema.McpServerElicitationRequestParams;
 
@@ -249,7 +254,7 @@ describe("T3 tool calls in a read-only orchestrating turn", () => {
     NodeAssert.equal(codexApprovalPolicyForTurn(orchestrating, "on-request"), "on-request");
   });
 
-  it("accepts T3's own tool calls without asking the user", () => {
+  it("accepts T3's thread orchestration tool calls without asking the user", () => {
     NodeAssert.equal(codexMcpElicitationDisposition(orchestrating, t3ToolCall), "accept");
     NodeAssert.deepStrictEqual(toMcpElicitationResponse(t3ToolCall, "accept"), {
       action: "accept",
@@ -261,6 +266,9 @@ describe("T3 tool calls in a read-only orchestrating turn", () => {
     const { _meta: __, ...withoutMetadata } = t3ToolCall;
     for (const payload of [
       { ...t3ToolCall, serverName: "computer-use" },
+      { ...t3ToolCall, message: 'Allow the t3-code MCP server to run tool "t3_project_delete"?' },
+      { ...t3ToolCall, message: 'Allow the t3-code MCP server to run tool "schedule_task"?' },
+      { ...t3ToolCall, message: "Allow the t3-code MCP server to run this tool?" },
       { ...t3ToolCall, _meta: { codex_approval_kind: "ordinary_form" } },
       withoutMetadata,
       {

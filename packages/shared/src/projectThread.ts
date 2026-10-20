@@ -31,6 +31,18 @@ export function isProjectThreadId(threadId: ThreadId): threadId is ProjectThread
  */
 export type ProjectThreadEnforcement = "read-only" | "prompt-only";
 
+/**
+ * The T3 MCP tools a read-only project-thread turn may call on top of T3's
+ * read-only tools: the ones that start, steer and stop other threads.
+ */
+export const PROJECT_THREAD_ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set([
+  "t3_thread_launch",
+  "t3_thread_send",
+  "t3_thread_read",
+  "t3_thread_interrupt",
+  "t3_thread_configure",
+]);
+
 // Every other driver is prompt-only: Cursor, Pi and Muse ignore the sandbox
 // policy, and Grok, OpenCode and ACP agents would deny T3's own tools under it,
 // leaving the project thread unable to launch anything.

@@ -56,6 +56,7 @@ import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
+import { PROJECT_THREAD_ORCHESTRATION_TOOLS } from "@t3tools/shared/projectThread";
 import {
   CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
   formatClaudeResumeCompactionQuestion,
@@ -1431,15 +1432,9 @@ export const CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   "mcp__t3-code__html_render",
 ];
 
-// A read-only turn that orchestrates T3 (a project thread) also needs the
-// tools that start, steer and stop other threads; it still cannot touch files.
 export const CLAUDE_ORCHESTRATING_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   ...CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS,
-  "mcp__t3-code__t3_thread_launch",
-  "mcp__t3-code__t3_thread_send",
-  "mcp__t3-code__t3_thread_read",
-  "mcp__t3-code__t3_thread_interrupt",
-  "mcp__t3-code__t3_thread_configure",
+  ...Array.from(PROJECT_THREAD_ORCHESTRATION_TOOLS, (tool) => `mcp__t3-code__${tool}`),
 ];
 
 // Claude Code aborts an HTTP MCP call after 60 s ("The operation timed out.")

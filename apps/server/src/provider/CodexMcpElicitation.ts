@@ -1,5 +1,6 @@
 import type { ProviderApprovalDecision, ProviderApprovalOption } from "@t3tools/contracts";
 import type { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
+import { PROJECT_THREAD_ORCHESTRATION_TOOLS } from "@t3tools/shared/projectThread";
 import * as Schema from "effect/Schema";
 import type * as EffectCodexSchema from "effect-codex-app-server/schema";
 
@@ -227,6 +228,12 @@ const isMcpToolCallApprovalMetadata = Schema.is(
   Schema.Struct({ codex_approval_kind: Schema.Literal("mcp_tool_call") }),
 );
 
+// Codex names the tool only in the prompt it builds for a tool-call approval
+// (codex-rs build_mcp_tool_approval_fallback_message); its _meta has no tool name.
+const T3_TOOL_CALL_APPROVAL_MESSAGE = new RegExp(
+  `^Allow the ${CODEX_T3_MCP_SERVER_NAME} MCP server to run tool "([^"]+)"\\?$`,
+);
+
 /**
  * Under approval policy "never" Codex fails every MCP tool call that is not
  * marked read-only without asking, which would leave a project thread unable to
@@ -253,17 +260,20 @@ export function codexApprovalPolicyForTurn(
 
 /**
  * How the adapter answers an MCP elicitation. In a turn allowed to orchestrate
- * T3, T3's own tool calls are accepted and everything else is declined, as the
- * turn's "never" policy would; any other turn asks the user.
+ * T3, calls to T3's thread orchestration tools are accepted and everything else
+ * is declined, as the turn's "never" policy would; any other turn asks the user.
  */
 export function codexMcpElicitationDisposition(
   runtimePolicy: ProviderAdapterV2RuntimePolicy,
   payload: EffectCodexSchema.McpServerElicitationRequestParams,
 ): "accept" | "decline" | "ask" {
   if (runtimePolicy.allowT3Orchestration !== true) return "ask";
+  const toolName = T3_TOOL_CALL_APPROVAL_MESSAGE.exec(payload.message)?.[1];
   return payload.serverName === CODEX_T3_MCP_SERVER_NAME &&
     payload.mode !== "url" &&
-    isMcpToolCallApprovalMetadata(payload._meta)
+    isMcpToolCallApprovalMetadata(payload._meta) &&
+    toolName !== undefined &&
+    PROJECT_THREAD_ORCHESTRATION_TOOLS.has(toolName)
     ? "accept"
     : "decline";
 }
