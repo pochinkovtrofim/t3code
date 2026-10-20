@@ -205,6 +205,7 @@ import {
 import { orderItemsByPreferredIds, sortLogicalProjectsForSidebar } from "./Sidebar.logic";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteContent } from "./CommandPaletteContent";
+import { useProjectThreadPaletteItem } from "./CommandPalette.projectThreads"; // fork: project threads
 import {
   CommandPaletteTitleIcon,
   CommandPaletteVirtualizedResults,
@@ -1634,6 +1635,9 @@ function OpenCommandPaletteDialog(props: {
       groups: [{ value: "new-thread-in", label: "Projects", items: projectThreadItems }],
     });
   }
+  // fork: project threads
+  const openProjectThreadItem = useProjectThreadPaletteItem();
+  if (openProjectThreadItem !== null) actionItems.push(openProjectThreadItem);
 
   if (scratchTargetEnvironmentId !== null) {
     actionItems.push({
