@@ -78,11 +78,18 @@ function oldestFirst(left: EnvironmentThreadShell, right: EnvironmentThreadShell
   return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 }
 
-export function liftProjectGroupManagers(input: {
+export interface ProjectGroupManagerInput {
   readonly groups: readonly SidebarProjectSnapshot[];
   readonly threads: readonly EnvironmentThreadShell[];
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
-}): ProjectGroupLift {
+}
+
+export interface ManagedProjectGroup {
+  readonly project: SidebarProjectSnapshot;
+  readonly manager: ProjectGroupManager;
+}
+
+export function liftProjectGroupManagers(input: ProjectGroupManagerInput): ProjectGroupLift {
   const isManaged = (member: SidebarProjectGroupMember) => {
     if (member.isScratch) return false;
     const config = input.serverConfigs.get(member.environmentId);
@@ -141,6 +148,16 @@ export function liftProjectGroupManagers(input: {
         ? input.threads
         : input.threads.filter((thread) => !liftedKeys.has(threadKeyOf(thread))),
   };
+}
+
+export function listManagedProjectGroups(
+  input: ProjectGroupManagerInput,
+): readonly ManagedProjectGroup[] {
+  const { managerByGroupKey } = liftProjectGroupManagers(input);
+  return input.groups.flatMap((project) => {
+    const manager = managerByGroupKey.get(project.projectKey);
+    return manager === undefined ? [] : [{ project, manager }];
+  });
 }
 
 // fork: mirrors LegacySidebar.tsx projectExpansionPreferenceKeys; keep in sync.

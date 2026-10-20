@@ -16,6 +16,7 @@ import { legacyProjectCwdPreferenceKey } from "../../uiStateStore";
 import {
   layoutSidebarProjectGroups,
   liftProjectGroupManagers,
+  listManagedProjectGroups,
   NO_PROJECT_GROUP_KEY,
 } from "./projectGroups.logic";
 
@@ -357,5 +358,48 @@ describe("layoutSidebarProjectGroups", () => {
         projectExpandedById: { [legacyProjectCwdPreferenceKey(billing.workspaceRoot)]: false },
       }).list.layoutKey,
     ).not.toBe(base);
+  });
+});
+
+describe("listManagedProjectGroups", () => {
+  const docs = makeProject({ id: ProjectId.make("docs") });
+
+  it("lists managed projects in sidebar order with the manager the sidebar header opens", () => {
+    const acmeManager = thread("project-thread:acme", acme);
+    const projects = [billing, acme, acmeRemote, scratch, docs];
+    const threads = [acmeManager, thread("ordinary", billing)];
+    const serverConfigs = new Map([
+      [primary, serverConfig({ disabledProjects: [docs.id] })],
+      [remote, serverConfig()],
+    ]);
+
+    const managed = listManagedProjectGroups({
+      groups: groupsOf(projects),
+      threads,
+      serverConfigs,
+    });
+
+    expect(managed.map(({ project }) => project.displayName)).toEqual(["billing", "acme"]);
+    expect(managed.map(({ manager }) => manager)).toEqual([
+      { kind: "ensure", projectRef: { environmentId: primary, projectId: billing.id } },
+      expect.objectContaining({
+        kind: "open",
+        thread: expect.objectContaining({ id: acmeManager.id }),
+      }),
+    ]);
+    const { list } = layout({ projects, threads, serverConfigs });
+    expect(list.groups.find((group) => group.label === "acme")?.manager).toEqual(
+      managed[1]?.manager,
+    );
+  });
+
+  it("lists nothing when no environment offers project threads", () => {
+    expect(
+      listManagedProjectGroups({
+        groups: groupsOf([acme, billing]),
+        threads: [thread("project-thread:acme", acme)],
+        serverConfigs: new Map([[primary, serverConfig({ projectThreads: false })]]),
+      }),
+    ).toEqual([]);
   });
 });
