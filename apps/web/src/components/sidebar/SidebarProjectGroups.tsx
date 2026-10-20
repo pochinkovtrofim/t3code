@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { scopedProjectKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
+import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { ScopedProjectRef, ScopedThreadRef } from "@t3tools/contracts";
 import {
   AlarmClockIcon,
@@ -48,7 +49,6 @@ import type {
   SidebarProjectGroupList,
 } from "./projectGroups.logic";
 
-// The header shows the statuses rows derive, in its own compact form.
 const STATUS_PRESENTATION: Record<
   SidebarV2TopStatusKind,
   { readonly label: string; readonly Icon: LucideIcon; readonly className: string }
@@ -67,11 +67,8 @@ const STATUS_PRESENTATION: Record<
   woke: { label: "Woke", Icon: AlarmClockIcon, className: "text-warning" },
 };
 
-/**
- * The grouped Active section. It is one non-sortable item in the sidebar's
- * sortable list, so the drag machinery treats it as the gap before the first
- * shelf and resolves drops over it to Active.
- */
+// Not a sortable item: Sidebar.drag treats it as the gap before the first shelf,
+// so drops over the groups resolve to Active.
 export function SidebarProjectGroups(props: {
   readonly list: SidebarProjectGroupList;
   readonly routeRowThreadKey: string | null;
@@ -106,15 +103,18 @@ export function SidebarProjectGroups(props: {
   });
   const startThread = useStableCallback((target: ScopedProjectRef) => {
     if (isMobile) setOpenMobile(false);
-    void handleNewThread(target).catch((error: unknown) =>
+    void (async () => {
+      const result = await settlePromise(() => handleNewThread(target));
+      if (result._tag === "Success") return;
+      const error = squashAtomCommandFailure(result);
       toastManager.add(
         stackedThreadToast({
           type: "error",
           title: "Could not create thread",
           description: error instanceof Error ? error.message : "An error occurred.",
         }),
-      ),
-    );
+      );
+    })();
   });
 
   if (props.list.groups.length === 0) return null;
@@ -157,8 +157,6 @@ function SidebarProjectGroupHeader(props: {
   const localLastVisitedAt = useUiStateStore((state) =>
     manager?.kind === "open" ? state.threadLastVisitedAtById[manager.threadKey] : undefined,
   );
-  // Without the scope to ensure, the header stays a plain project header
-  // instead of offering a click the server would refuse.
   const canEnsure = useAtomValue(
     projectEnvironment.ensureThread.permissionAtom(
       manager?.kind === "ensure" ? manager.projectRef.environmentId : null,

@@ -24,8 +24,6 @@ import { useStableCallback } from "./useStableCallback";
 
 const NO_PENDING_PROJECTS: ReadonlySet<string> = new Set();
 
-// The server uses the project's default model when it has one. Otherwise the
-// project thread starts on the model a new draft would pick in that environment.
 function fallbackModelSelection(environmentId: EnvironmentId): ModelSelection | null {
   const { stickyActiveProvider, stickyModelSelectionByProvider } = useComposerDraftStore.getState();
   const providers =
@@ -43,12 +41,6 @@ function reportOpenFailure(description: string) {
   );
 }
 
-/**
- * Opens a project's project thread, asking the server to create or unarchive
- * it first. Navigation waits for the thread's shell to reach this device, as a
- * route to a thread the client has not seen renders an empty view until it
- * loads, and is skipped when the user moved on in the meantime.
- */
 export function useOpenProjectThread(navigate: (threadRef: ScopedThreadRef) => unknown) {
   const router = useRouter();
   const ensureThread = useAtomCommand(projectEnvironment.ensureThread, { reportFailure: false });
@@ -82,6 +74,7 @@ export function useOpenProjectThread(navigate: (threadRef: ScopedThreadRef) => u
       return;
     }
     const threadRef = scopeThreadRef(projectRef.environmentId, result.value.threadId);
+    // A thread route renders an empty view until the client has the thread's shell.
     const arrived = await waitForThreadShell(threadRef);
     setPending(projectKey, false);
     if (!arrived) {

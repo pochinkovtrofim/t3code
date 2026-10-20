@@ -11,15 +11,11 @@ import {
 } from "../chat/threadContextDrag";
 import { SidebarPointerSensor } from "../Sidebar.pointer";
 
+// fork: mirrors Sidebar.tsx SIDEBAR_DRAG_DISTANCE, contextDragThreads and
+// pointerOutsideThreadList; keep in sync.
 const CONTEXT_DRAG_DISTANCE = 6;
 const ignore = () => {};
 
-/**
- * Rows inside project groups are not sortable, so they keep only the drag that
- * does not depend on list position: out of the sidebar onto a composer as chat
- * context. The pointer sensor runs on its own, as Sidebar's settle sweep does,
- * so the sidebar's drop planner never sees these rows.
- */
 export function useProjectGroupRowContextDrag(input: {
   readonly threadKey: string;
   readonly title: string;
@@ -27,8 +23,7 @@ export function useProjectGroupRowContextDrag(input: {
 }) {
   const onPointerDown = useStableCallback((event: ReactPointerEvent<HTMLElement>) => {
     if (!event.nativeEvent.isPrimary || event.button !== 0) return;
-    // fork: mirrors Sidebar.tsx contextDragThreads and pointerOutsideThreadList; keep in sync.
-    // A row spans the thread list's width, so its bounds stand in for the list's.
+    // Rows span the thread list's width, so a row's edges are the list's.
     const bounds = event.currentTarget.getBoundingClientRect();
     const outsideList = (point: { x: number; y: number }) =>
       point.x < bounds.left || point.x > bounds.right;

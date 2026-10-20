@@ -22,7 +22,6 @@ export type ProjectGroupManager =
 
 export interface ProjectGroupLift {
   readonly managerByGroupKey: ReadonlyMap<string, ProjectGroupManager>;
-  /** Every thread except the open managers, which their group headers represent. */
   readonly rowThreads: readonly EnvironmentThreadShell[];
 }
 
@@ -33,7 +32,6 @@ export type SidebarProjectGroupAttention = Extract<
 
 export interface SidebarProjectGroup {
   readonly key: string;
-  /** null for the "No project" tail when no scratch project exists. */
   readonly project: SidebarProjectSnapshot | null;
   readonly label: string;
   readonly manager: ProjectGroupManager | null;
@@ -47,10 +45,8 @@ export interface SidebarProjectGroup {
 
 export interface SidebarProjectGroupList {
   readonly groups: readonly SidebarProjectGroup[];
-  /** Rendered rows in screen order, for jump hints, traversal, range selection and sweeps. */
   readonly visibleThreads: readonly EnvironmentThreadShell[];
   readonly managerThreads: readonly EnvironmentThreadShell[];
-  /** Changes only when a group or row appears, disappears or moves. */
   readonly layoutKey: string;
 }
 
@@ -76,19 +72,12 @@ function threadKeyOf(thread: Pick<EnvironmentThreadShell, "environmentId" | "id"
   return scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
 }
 
-// Same order as ProjectThreadService.findExisting, so the header opens the
-// thread the server would return from ensure.
+// Matches ProjectThreadService.findExisting, so the header opens the thread ensure returns.
 function oldestFirst(left: EnvironmentThreadShell, right: EnvironmentThreadShell): number {
   if (left.createdAt !== right.createdAt) return left.createdAt < right.createdAt ? -1 : 1;
   return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
 }
 
-/**
- * Picks one manager per project group. A thread is lifted out of the rows if
- * and only if it is a group's open manager, so any other project thread (its
- * project has the feature off, its server predates it, or it belongs to a
- * second checkout) stays an ordinary, reachable row.
- */
 export function liftProjectGroupManagers(input: {
   readonly groups: readonly SidebarProjectSnapshot[];
   readonly threads: readonly EnvironmentThreadShell[];
@@ -154,8 +143,7 @@ export function liftProjectGroupManagers(input: {
   };
 }
 
-// fork: mirrors LegacySidebar.tsx projectExpansionPreferenceKeys; keep in sync
-// so both sidebars read and write the same per-device collapse state.
+// fork: mirrors LegacySidebar.tsx projectExpansionPreferenceKeys; keep in sync.
 function projectGroupExpansionKeys(group: SidebarProjectSnapshot): readonly string[] {
   return [
     group.projectKey,
@@ -164,12 +152,6 @@ function projectGroupExpansionKeys(group: SidebarProjectSnapshot): readonly stri
   ];
 }
 
-/**
- * Buckets the Active section by project in its existing order. Threads without
- * a known project join the scratch group, which always comes last. A group
- * shows when it has rows or an open manager, and a collapsed group still shows
- * the route row, like LegacySidebar and the collapsed shelves.
- */
 export function layoutSidebarProjectGroups(input: {
   readonly projectGroups: readonly SidebarProjectSnapshot[];
   readonly activeThreads: readonly EnvironmentThreadShell[];
