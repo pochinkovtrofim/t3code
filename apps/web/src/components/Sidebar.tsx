@@ -242,6 +242,13 @@ import {
 } from "./Sidebar.drag";
 import { SidebarDragLifecycle, SidebarPointerSensor } from "./Sidebar.pointer";
 import { createSidebarListMotion } from "./Sidebar.motion";
+// fork: project groups
+import {
+  layoutSidebarProjectGroups,
+  liftProjectGroupManagers,
+} from "./sidebar/projectGroups.logic";
+import { SidebarProjectGroups } from "./sidebar/SidebarProjectGroups";
+import { useProjectGroupRowContextDrag } from "./sidebar/useProjectGroupRowContextDrag";
 import {
   ThreadPullRequestBadgeControl,
   ThreadPullRequestsMiniList,
@@ -452,6 +459,7 @@ function useSidebarThreads(input: {
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
   readonly optimisticDrop: SidebarOptimisticDrop | null;
   readonly routeThreadRef: ScopedThreadRef | null;
+  readonly projectGroups: readonly SidebarProjectSnapshot[]; // fork: project groups
 }) {
   const { projectScopeKey, scopedProjectKeys, serverConfigs, optimisticDrop, routeThreadRef } =
     input;
@@ -470,6 +478,7 @@ function useSidebarThreads(input: {
           ),
         );
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
+  const projectExpandedById = useUiStateStore((store) => store.projectExpandedById); // fork: project groups
   const nowMinute = useNowMinute();
   // Snooze wake times are second-precise, so classifying with the quantized
   // minute would hold a woken thread on the shelf for up to a minute.
@@ -505,8 +514,14 @@ function useSidebarThreads(input: {
   const settledVisibleCount =
     settledTail.scopeKey === projectScopeKey ? settledTail.count : SETTLED_TAIL_INITIAL_COUNT;
 
-  const partition = partitionSidebarThreads({
+  // fork: project groups
+  const projectGroupLift = liftProjectGroupManagers({
+    groups: input.projectGroups,
     threads,
+    serverConfigs,
+  });
+  const partition = partitionSidebarThreads({
+    threads: projectGroupLift.rowThreads, // fork: project groups
     scopedProjectKeys,
     serverConfigs,
     optimisticDrop,
@@ -518,6 +533,15 @@ function useSidebarThreads(input: {
 
   const { pinnedThreads, activeThreads, workingThreads, snoozedThreads, settledThreads } =
     partition;
+  // fork: project groups
+  const projectGroupList = layoutSidebarProjectGroups({
+    projectGroups: input.projectGroups,
+    activeThreads,
+    managerByGroupKey: projectGroupLift.managerByGroupKey,
+    projectScopeKey,
+    projectExpandedById,
+    routeRowThreadKey,
+  });
   const visibleSettledThreads = (() => {
     if (settledThreads.length <= settledVisibleCount) return settledThreads;
     const visible = settledThreads.slice(0, settledVisibleCount);
@@ -540,7 +564,7 @@ function useSidebarThreads(input: {
     : routeThreadOnly(workingThreads, routeRowThreadKey);
   const orderedThreads = [
     ...pinnedThreads,
-    ...activeThreads,
+    ...projectGroupList.visibleThreads, // fork: project groups
     ...visibleWorkingThreads,
     ...visibleSnoozedThreads,
     ...renderedSettledThreads,
@@ -566,7 +590,9 @@ function useSidebarThreads(input: {
       ...workingThreads,
       ...snoozedThreads,
       ...settledThreads,
+      ...projectGroupList.managerThreads, // fork: project groups
     ],
+    projectGroupList, // fork: project groups
     settledVisibleCount,
     hiddenSettledCount: settledThreads.length - visibleSettledThreads.length,
     showMoreSettled: () =>
@@ -1175,6 +1201,28 @@ function SortableThreadRow(
   };
   // Keyed by variant so a card/slim switch remounts the row.
   return <SidebarThreadRow key={rowProps.variant} {...rowProps} sortable={bag} />;
+}
+
+// fork: project groups
+function GroupedThreadRow(props: Parameters<typeof SortableThreadRow>[0]) {
+  const { sortableId, sortableDisabled, contextDrag: _contextDrag, ...rowProps } = props;
+  const canOperateThread = useEnvironmentScope(
+    rowProps.thread.environmentId,
+    AuthOrchestrationOperateScope,
+  );
+  const sortable = useProjectGroupRowContextDrag({
+    threadKey: sortableId,
+    title: rowProps.thread.title,
+    disabled: sortableDisabled || !canOperateThread,
+  });
+  return (
+    <SidebarThreadRow
+      key={rowProps.variant}
+      {...rowProps}
+      projectDisplayName={null}
+      sortable={sortable}
+    />
+  );
 }
 
 const draftSurfaceClassName = "bg-warning/4 hover:bg-warning/8";
@@ -3021,12 +3069,14 @@ export default function Sidebar() {
     pinnedKeysById,
     activeKeysById,
     routeRowThreadKey,
+    projectGroupList, // fork: project groups
   } = useSidebarThreads({
     projectScopeKey,
     scopedProjectKeys,
     serverConfigs,
     optimisticDrop,
     routeThreadRef,
+    projectGroups, // fork: project groups
   });
 
   const isSearchingThreads = threadSearchQuery.trim().length > 0;
@@ -3558,7 +3608,7 @@ export default function Sidebar() {
       });
     if (
       pinnedThreads.length +
-        activeThreads.length +
+        projectGroupList.groups.length + // fork: project groups
         workingThreads.length +
         snoozedThreads.length +
         settledThreads.length ===
@@ -3570,9 +3620,8 @@ export default function Sidebar() {
     const pinnedRows = rowsOf(pinnedThreads, "pinned");
     items.push(...pinnedRows);
     items.push({ kind: "marker", marker: "pinned-divider" });
-    const activeRows = rowsOf(activeThreads, "active");
+    // fork: project groups render the active rows outside the sortable list.
     items.push({ kind: "marker", marker: "active-placeholder" });
-    items.push(...activeRows);
     if (workingThreads.length > 0) {
       items.push({ kind: "marker", marker: "working-header" });
       items.push(...rowsOf(visibleWorkingThreads, "working"));
@@ -3617,6 +3666,7 @@ export default function Sidebar() {
   // from forcing a layout read and animating rows that drifted for other reasons.
   const listMotionLayoutKey = [
     sidebarListItemsKey,
+    projectGroupList.layoutKey, // fork: project groups
     visibleDraftSessionCount,
     routeDraftIdForRows ?? "",
   ].join("\0");
@@ -3690,7 +3740,7 @@ export default function Sidebar() {
             activeOrder: activeKeys,
             activeKeysById,
             activeReorderableKeys: activeReorderableThreadKeys,
-            activeTimeOrdered: workingShelfEnabled,
+            activeTimeOrdered: true, // fork: project groups
           }).kind !== "none"
         );
       },
@@ -3725,7 +3775,7 @@ export default function Sidebar() {
       activeOrder: activeKeys,
       activeKeysById,
       activeReorderableKeys: activeReorderableThreadKeys,
-      activeTimeOrdered: workingShelfEnabled,
+      activeTimeOrdered: true, // fork: project groups
     });
     if (plan.kind === "none") return;
     if (plan.kind === "settle" && settlingThreadKeysRef.current.has(activeKey)) return;
@@ -4813,6 +4863,7 @@ export default function Sidebar() {
                       const renderThreadRow = (
                         thread: EnvironmentThreadShell,
                         section: SidebarSection,
+                        placement: "list" | "group" = "list", // fork: project groups
                       ) => {
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
@@ -4820,8 +4871,10 @@ export default function Sidebar() {
                         const isCard =
                           section === "active" || section === "pinned" || section === "working";
                         const rowVariant = isCard ? "card" : "slim";
+                        const ThreadRow =
+                          placement === "group" ? GroupedThreadRow : SortableThreadRow; // fork: project groups
                         return (
-                          <SortableThreadRow
+                          <ThreadRow
                             key={threadKey}
                             sortableId={threadKey}
                             contextDrag={isContextDrag}
@@ -4967,13 +5020,24 @@ export default function Sidebar() {
                                 label="Active"
                                 showHint={
                                   from !== null &&
-                                  (activeThreads.length === 0 ||
+                                  (projectGroupList.groups.length === 0 || // fork: project groups
                                     (from === "active" &&
                                       activeThreads.length === 1 &&
                                       dragTargetSection !== null &&
                                       dragTargetSection !== "active"))
                                 }
                                 isDropTarget={dragTargetSection === "active"}
+                              />,
+                            );
+                            // fork: project groups
+                            items.push(
+                              <SidebarProjectGroups
+                                key="project-groups"
+                                list={projectGroupList}
+                                routeRowThreadKey={routeRowThreadKey}
+                                motionPaused={!listMotionAnimate}
+                                onOpenThread={navigateToThread}
+                                renderRow={(thread) => renderThreadRow(thread, "active", "group")}
                               />,
                             );
                             break;
@@ -5077,7 +5141,7 @@ export default function Sidebar() {
           {!isSearchingThreads &&
           visibleDraftSessionCount === 0 &&
           pinnedThreads.length +
-            activeThreads.length +
+            projectGroupList.groups.length + // fork: project groups
             workingThreads.length +
             snoozedThreads.length +
             settledThreads.length ===
