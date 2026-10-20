@@ -92,6 +92,18 @@ const [headSha, middleSha, oldestSha] = shapes.commits.map((commit) => commit.sh
   string,
 ];
 
+const previewDeployments = Array.from({ length: 30 }, (_, index) => ({
+  ...shapes.deployments[0]!,
+  id: index + 1,
+  environment: `pr-${index + 1}`,
+  transient_environment: true,
+}));
+
+const environmentList = (names: ReadonlyArray<string>) => ({
+  total_count: names.length,
+  environments: names.map((name, index) => ({ id: index + 1, name })),
+});
+
 const forkRoutes = {
   [forkPath("")]: { body: shapes.repository },
   [forkPath("/commits/main")]: { body: shapes.headSha },
@@ -307,6 +319,7 @@ describe("GitHubLandings", () => {
       [upstreamPath("/deployments?environment=production&per_page=5")]: {
         body: shapes.deployments,
       },
+      [upstreamPath("/deployments?environment=Production&per_page=5")]: { body: [] },
       [upstreamPath(`/deployments/${shapes.deployments[0]!.id}/statuses?per_page=1`)]: {
         body: shapes.deploymentStatuses,
       },
@@ -339,15 +352,10 @@ describe("GitHubLandings", () => {
 
   it.effect("finds production behind a page of preview deployments", () => {
     const [deployed] = shapes.deployments;
-    const previews = Array.from({ length: 30 }, (_, index) => ({
-      ...deployed!,
-      id: index + 1,
-      environment: `pr-${index + 1}`,
-      transient_environment: true,
-    }));
     const { layer } = harness({
-      [upstreamPath("/deployments?per_page=30")]: { body: previews },
+      [upstreamPath("/deployments?per_page=30")]: { body: previewDeployments },
       [upstreamPath("/deployments?environment=production&per_page=5")]: { body: [deployed] },
+      [upstreamPath("/deployments?environment=Production&per_page=5")]: { body: [] },
       [upstreamPath(`/deployments/${deployed!.id}/statuses?per_page=1`)]: {
         body: shapes.deploymentStatuses,
       },
@@ -363,14 +371,93 @@ describe("GitHubLandings", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("finds a production environment the first time, behind a page of previews", () => {
+    const [deployed] = shapes.deployments;
+    const { layer } = harness({
+      [upstreamPath("/environments?per_page=100")]: {
+        body: environmentList(["prod-eu", ...previewDeployments.map((p) => p.environment)]),
+      },
+      [upstreamPath("/deployments?per_page=30")]: { body: previewDeployments },
+      [upstreamPath("/deployments?environment=prod-eu&per_page=5")]: {
+        body: [{ ...deployed!, environment: "prod-eu" }],
+      },
+      [upstreamPath(`/deployments/${deployed!.id}/statuses?per_page=1`)]: {
+        body: shapes.deploymentStatuses,
+      },
+    });
+    return Effect.gen(function* () {
+      const landings = yield* GitHubLandings.GitHubLandings;
+      const { deployment } = yield* landings.readProduction({
+        repository: upstream,
+        previousEnvironment: null,
+      });
+      assert(deployment._tag === "Found");
+      assert.strictEqual(deployment.value.environment, "prod-eu");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("takes a newer production deployment over last sync's environment", () => {
+    const [deployed] = shapes.deployments;
+    const [status] = shapes.deploymentStatuses;
+    const { layer } = harness({
+      [upstreamPath("/environments?per_page=100")]: {
+        body: environmentList(["prod-eu", "prod-us"]),
+      },
+      [upstreamPath("/deployments?per_page=30")]: { body: [] },
+      [upstreamPath("/deployments?environment=prod-eu&per_page=5")]: {
+        body: [{ ...deployed!, id: 1, sha: "a".repeat(40), environment: "prod-eu" }],
+      },
+      [upstreamPath("/deployments?environment=prod-us&per_page=5")]: {
+        body: [{ ...deployed!, id: 2, sha: "b".repeat(40), environment: "prod-us" }],
+      },
+      [upstreamPath("/deployments/1/statuses?per_page=1")]: {
+        body: [{ ...status!, created_at: "2026-10-20T08:00:00Z" }],
+      },
+      [upstreamPath("/deployments/2/statuses?per_page=1")]: {
+        body: [{ ...status!, created_at: "2026-10-20T09:00:00Z" }],
+      },
+    });
+    return Effect.gen(function* () {
+      const landings = yield* GitHubLandings.GitHubLandings;
+      const { deployment } = yield* landings.readProduction({
+        repository: upstream,
+        previousEnvironment: "prod-eu",
+      });
+      assert(deployment._tag === "Found");
+      assert.deepStrictEqual(
+        [deployment.value.environment, deployment.value.sha],
+        ["prod-us", "b".repeat(40)],
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each([403, 500])(
+    "never calls production absent when the environment list answers %s",
+    (status) => {
+      const { layer } = harness({
+        [upstreamPath("/environments?per_page=100")]: {
+          status,
+          body: { message: "Resource not accessible by integration" },
+        },
+        [upstreamPath("/deployments?per_page=30")]: { body: previewDeployments },
+        [upstreamPath("/deployments?environment=production&per_page=5")]: { body: [] },
+        [upstreamPath("/deployments?environment=Production&per_page=5")]: { body: [] },
+        [upstreamPath("/releases?per_page=1")]: { body: [] },
+        [upstreamPath("/tags?per_page=100")]: { body: [] },
+      });
+      return Effect.gen(function* () {
+        const landings = yield* GitHubLandings.GitHubLandings;
+        const { deployment } = yield* landings.readProduction({
+          repository: upstream,
+          previousEnvironment: null,
+        });
+        assert.deepStrictEqual(deployment, { _tag: "Unavailable" });
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("asks last sync's environment first, and never calls it absent unproven", () => {
     const [deployed] = shapes.deployments;
-    const previews = Array.from({ length: 30 }, (_, index) => ({
-      ...deployed!,
-      id: index + 1,
-      environment: `pr-${index + 1}`,
-      transient_environment: true,
-    }));
     const { layer, requests } = harness({
       [upstreamPath("/deployments?environment=prod-eu&per_page=5")]: {
         body: [{ ...deployed!, environment: "prod-eu" }],
@@ -378,7 +465,7 @@ describe("GitHubLandings", () => {
       [upstreamPath(`/deployments/${deployed!.id}/statuses?per_page=1`)]: {
         body: [{ ...shapes.deploymentStatuses[0]!, state: "in_progress" }],
       },
-      [upstreamPath("/deployments?per_page=30")]: { body: previews },
+      [upstreamPath("/deployments?per_page=30")]: { body: previewDeployments },
       [upstreamPath("/deployments?environment=production&per_page=5")]: { body: [] },
       [upstreamPath("/deployments?environment=Production&per_page=5")]: { body: [] },
       [upstreamPath("/releases?per_page=1")]: { body: [] },
@@ -392,7 +479,7 @@ describe("GitHubLandings", () => {
       });
       assert.deepStrictEqual(production.deployment, { _tag: "Unavailable" });
       assert.strictEqual(
-        requests[0]?.url,
+        requests.find((request) => request.url.includes("environment="))?.url,
         upstreamPath("/deployments?environment=prod-eu&per_page=5"),
       );
     }).pipe(Effect.provide(layer));
@@ -469,6 +556,7 @@ describe("GitHubLandings", () => {
     "revalidates a repository's lack of releases instead of reading a 404 each sync",
     () => {
       const { layer, requests } = harness({
+        [upstreamPath("/environments?per_page=100")]: { body: environmentList([]) },
         [upstreamPath("/deployments?per_page=30")]: { body: [] },
         [upstreamPath("/releases?per_page=1")]: { body: [] },
         [upstreamPath("/tags?per_page=100")]: { body: shapes.tags },

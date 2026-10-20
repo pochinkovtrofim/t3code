@@ -38,7 +38,10 @@ const MAX_PULL_PAGES = 3;
 /** The merged-PR list is sorted by update time, so it reads a little past the oldest commit. */
 const PULL_LIST_SLACK_MS = 24 * 60 * 60_000;
 const DEPLOYMENT_CANDIDATES = 5;
-const MAX_ENVIRONMENT_QUERIES = 3;
+const MAX_ENVIRONMENT_QUERIES = 5;
+const ENVIRONMENT_PAGE_SIZE = 100;
+const RECENT_DEPLOYMENTS = 30;
+/** Asked when the repository's environment list cannot be read. */
 const PRODUCTION_ENVIRONMENT_NAMES = ["production", "Production"];
 const CACHED_ANSWERS_PER_OPERATION = 256;
 const LOOKUP_CONCURRENCY = 4;
@@ -170,6 +173,11 @@ const RestDeployment = Schema.Struct({
   environment: Schema.String,
   production_environment: Schema.optional(Schema.Boolean),
   transient_environment: Schema.optional(Schema.Boolean),
+});
+
+const RestEnvironments = Schema.Struct({
+  total_count: Schema.Int,
+  environments: Schema.Array(Schema.Struct({ name: Schema.String })),
 });
 
 const RestDeploymentStatus = Schema.Struct({
@@ -320,7 +328,7 @@ const make = Effect.gen(function* () {
   const getDeployments = conditionalGet(
     "changelogDeployments",
     decodeJson("changelogDeployments", Schema.Array(RestDeployment), (rows) => ({
-      any: rows.length > 0,
+      count: rows.length,
       production: rows.filter((deployment) =>
         isProductionEnvironment({
           name: deployment.environment,
@@ -328,6 +336,13 @@ const make = Effect.gen(function* () {
           transient: deployment.transient_environment ?? null,
         }),
       ),
+    })),
+  );
+  const getEnvironments = conditionalGet(
+    "changelogEnvironments",
+    decodeJson("changelogEnvironments", RestEnvironments, (answer) => ({
+      names: answer.environments.map((environment) => environment.name),
+      complete: answer.total_count <= answer.environments.length,
     })),
   );
   const getLatestStatus = conditionalGet(
@@ -498,38 +513,58 @@ const make = Effect.gen(function* () {
     return { _tag: "NoSuccess" } as const;
   });
 
-  // Each environment is asked by name: preview deployments can fill any page of all of them.
+  /**
+   * Each production environment is asked by name, since preview deployments can fill any page of
+   * all of them. Absent only when every production environment was asked and none has deployed.
+   */
   const observeDeployment = Effect.fnUntraced(function* (
     repository: GitHubRepository,
     previousEnvironment: string | null,
   ) {
-    let deploying = false;
-    if (previousEnvironment !== null) {
-      const answer = yield* observeEnvironment(repository, previousEnvironment);
-      if (answer._tag === "Found") return answer;
-      deploying = answer._tag === "NoSuccess";
-    }
-    const newest = yield* getDeployments(
+    const listed = yield* getEnvironments(
       repository,
-      repoPath(repository, "deployments?per_page=30"),
+      repoPath(repository, `environments?per_page=${ENVIRONMENT_PAGE_SIZE}`),
+    ).pipe(
+      Effect.catchTags({
+        GitHubApiNotFoundError: () => Effect.succeed(null),
+        GitHubApiResponseError: (error) =>
+          error.status === 403 ? Effect.succeed(null) : Effect.fail(error),
+      }),
     );
-    if (!newest.any && !deploying) return { _tag: "Absent" } as const;
-    const others = [
+    const recent = yield* getDeployments(
+      repository,
+      repoPath(repository, `deployments?per_page=${RECENT_DEPLOYMENTS}`),
+    );
+    const candidates = [
       ...new Set([
-        ...newest.production.map((deployment) => deployment.environment),
-        ...PRODUCTION_ENVIRONMENT_NAMES,
+        ...(previousEnvironment === null ? [] : [previousEnvironment]),
+        ...(listed === null
+          ? PRODUCTION_ENVIRONMENT_NAMES
+          : listed.names.filter((name) =>
+              isProductionEnvironment({ name, productionFlag: null, transient: null }),
+            )),
+        // The environment list carries no production flag; the newest deployments do.
+        ...recent.production.map((deployment) => deployment.environment),
       ]),
-    ].filter((name) => name !== previousEnvironment);
-    const budget = MAX_ENVIRONMENT_QUERIES - (previousEnvironment === null ? 0 : 1);
-    for (const environment of others.slice(0, budget)) {
-      const answer = yield* observeEnvironment(repository, environment);
-      if (answer._tag === "Found") return answer;
-      if (answer._tag === "NoSuccess") deploying = true;
-    }
-    const searchRanOut = previousEnvironment !== null && others.length > budget;
-    return deploying || searchRanOut
-      ? ({ _tag: "Unavailable" } as const)
-      : ({ _tag: "Absent" } as const);
+    ];
+    const asked = candidates.slice(0, MAX_ENVIRONMENT_QUERIES);
+    const answers = yield* Effect.forEach(asked, (environment) =>
+      observeEnvironment(repository, environment),
+    );
+    const newest = answers.reduce<DeploymentSignal | null>(
+      (best, answer) =>
+        answer._tag === "Found" && (best === null || answer.value.at > best.at)
+          ? answer.value
+          : best,
+      null,
+    );
+    if (newest !== null) return { _tag: "Found", value: newest } as const;
+    const everyEnvironmentAsked =
+      (listed === null ? recent.count < RECENT_DEPLOYMENTS : listed.complete) &&
+      asked.length === candidates.length;
+    return everyEnvironmentAsked && answers.every((answer) => answer._tag === "Empty")
+      ? ({ _tag: "Absent" } as const)
+      : ({ _tag: "Unavailable" } as const);
   });
 
   const observeRelease = Effect.fnUntraced(function* (repository: GitHubRepository) {
