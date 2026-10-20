@@ -75,6 +75,7 @@ import {
   SUMMARY_BATCH_UNITS,
   summaryHoldUntil,
   type UnitKey,
+  withStoredFragments,
 } from "./changelogModel.ts";
 import * as GitHubLandings from "./GitHubLandings.ts";
 
@@ -226,11 +227,6 @@ function threadDigest(items: ReadonlyArray<{ readonly item: OrchestrationV2TurnI
   ]
     .filter((part) => part !== "")
     .join("\n");
-}
-
-function unitKeyByOrdinal(units: ReadonlyArray<ChangeUnit>): (ordinal: number) => UnitKey | null {
-  return (ordinal) =>
-    units.find((unit) => unit.firstOrdinal <= ordinal && ordinal <= unit.lastOrdinal)?.key ?? null;
 }
 
 const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChangelogOptions = {}) {
@@ -563,24 +559,32 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
           landings.filter((landing) => !batch.has(landing.ordinal - 1)),
           (landing) => store.unitEndingAt(key, landing.ordinal - 1),
         );
-    const { units, deferred } = groupChangeUnits({
+    const grouped = groupChangeUnits({
       repository,
       below: below.filter((unit) => unit !== null),
       landings,
       headOrdinal: base + fresh.length,
     });
-    const unitKeyOf = unitKeyByOrdinal(units);
+    const stored = reset
+      ? []
+      : yield* store.liveUnits(
+          key,
+          grouped.units.map((unit) => unit.key),
+        );
     yield* store.applySync({
       key,
       defaultBranch: head.defaultBranch,
       cursor: { headSha: reached, headOrdinal: base + fresh.length },
       reset,
-      commits: landings.map((landing) => ({ landing, unitKey: unitKeyOf(landing.ordinal) })),
-      units,
+      commits: landings.map((landing) => ({
+        landing,
+        unitKey: grouped.unitKeys.get(landing.ordinal) ?? null,
+      })),
+      units: withStoredFragments(grouped.units, stored),
       production,
       now,
     });
-    return { backlog: behind || deferred.length > 0 };
+    return { backlog: behind || grouped.deferred.length > 0 };
   });
 
   /** Up to five threads per entry: linked to the entry's pull request, or on its branch. */

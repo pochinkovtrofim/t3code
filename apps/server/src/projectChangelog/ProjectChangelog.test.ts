@@ -532,6 +532,76 @@ describe("ProjectChangelog", () => {
     }).pipe(Effect.provide(layer), atNow);
   });
 
+  it.effect("keeps one entry for a pull request whose middle commit has no answer", () => {
+    const { github, model, layer } = harness();
+    const rebased = { ...pull(7, "r3", NOW - 30 * MINUTE), mergeCommitSha: null };
+    github.state.commits = [
+      commit("c1", null, NOW - 180 * MINUTE, "alice", "Fix typo in README"),
+      commit("r1", "c1", NOW - 40 * MINUTE, "bob", "Add the parser"),
+      commit("r2", "r1", NOW - 40 * MINUTE, "bob", "Parse comments"),
+      commit("r3", "r2", NOW - 40 * MINUTE, "bob", "Test the parser"),
+    ];
+    github.state.pulls = [];
+    github.state.lookups.set("r1", { _tag: "Answered", pullRequests: [rebased] });
+    github.state.lookups.set("r2", { _tag: "Failed" });
+    github.state.lookups.set("r3", { _tag: "Answered", pullRequests: [rebased] });
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      yield* changelog.read({ projectId: p1 });
+      yield* TestClock.adjust(MINUTE);
+      yield* TestClock.adjust(MINUTE);
+      yield* changelog.drain;
+      const page = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(
+        page.entries.map((entry) => [entry.id, entry.commits.count]),
+        [
+          ["pr:7", 3],
+          ["push:c1", 1],
+        ],
+      );
+      const prompted = model.calls.flatMap((call) => call.units).findLast((u) => u.key === "pr:7");
+      assert.deepStrictEqual(prompted?.commitSubjects, [
+        "Add the parser",
+        "Parse comments",
+        "Test the parser",
+      ]);
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("keeps both halves of a pull request another one landed between", () => {
+    const { github, model, layer } = harness();
+    const split = { ...pull(7, "c", NOW - 20 * MINUTE), mergeCommitSha: null };
+    github.state.commits = [
+      commit("c1", null, NOW - 180 * MINUTE, "alice", "Fix typo in README"),
+      commit("a", "c1", NOW - 40 * MINUTE, "bob", "Add the parser"),
+      commit("b", "a", NOW - 30 * MINUTE, "web-flow", "Speed up search (#8)"),
+    ];
+    github.state.pulls = [pull(8, "b", NOW - 30 * MINUTE)];
+    github.state.lookups.set("a", { _tag: "Answered", pullRequests: [split] });
+    github.state.lookups.set("c", { _tag: "Answered", pullRequests: [split] });
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      yield* changelog.read({ projectId: p1 });
+
+      github.state.commits.push(commit("c", "b", NOW - 20 * MINUTE, "bob", "Test the parser"));
+      yield* TestClock.adjust(16 * MINUTE);
+      yield* changelog.drain;
+      const page = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(
+        page.entries.map((entry) => [entry.id, entry.commits.count]),
+        [
+          ["pr:7", 2],
+          ["pr:8", 1],
+          ["push:c1", 1],
+        ],
+      );
+      const prompted = model.calls.flatMap((call) => call.units).findLast((u) => u.key === "pr:7");
+      assert.deepStrictEqual(prompted?.commitSubjects, ["Add the parser", "Test the parser"]);
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
   it.effect("shows a sync that crashed, and recovers on the next one", () => {
     const { github, layer } = harness();
     github.state.headDefects = 1;

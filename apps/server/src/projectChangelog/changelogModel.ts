@@ -441,42 +441,137 @@ function finish(open: OpenUnit, closed: boolean): ChangeUnit {
 }
 
 /**
+ * One entry for two fragments of one unit, `earlier` ending below `later`. Only contradictory
+ * GitHub answers split a pull request, and the entry keeps the commits of both.
+ */
+function mergeFragments(earlier: ChangeUnit, later: ChangeUnit): ChangeUnit {
+  const source: ChangeUnitSource = {
+    ...later.source,
+    commitSubjects: [...earlier.source.commitSubjects, ...later.source.commitSubjects].slice(
+      0,
+      MAX_COMMIT_SUBJECTS,
+    ),
+  };
+  const commitCount = earlier.commitCount + later.commitCount;
+  return {
+    ...later,
+    source,
+    firstOrdinal: earlier.firstOrdinal,
+    commitCount,
+    authors: [...new Set([...earlier.authors, ...later.authors])].slice(0, MAX_UNIT_AUTHORS),
+    contentHash: contentHashOf(source, commitCount),
+  };
+}
+
+/**
+ * `units` with the earlier fragment each one has among `stored` folded in. A stored unit that
+ * does not end below its namesake is that unit before it grew, and is replaced.
+ */
+export function withStoredFragments(
+  units: ReadonlyArray<ChangeUnit>,
+  stored: ReadonlyArray<ChangeUnit>,
+): ReadonlyArray<ChangeUnit> {
+  const storedByKey = new Map(stored.map((unit) => [unit.key, unit]));
+  return units.map((unit) => {
+    const earlier = storedByKey.get(unit.key);
+    return earlier !== undefined && earlier.lastOrdinal < unit.firstOrdinal
+      ? mergeFragments(earlier, unit)
+      : unit;
+  });
+}
+
+/**
+ * On first-parent history one pull request's commits are contiguous: a rebase merge pushes them
+ * at once, and squash and merge commits are single commits. A run of direct or unresolved
+ * landings with the same pull request directly on both sides is that pull request's.
+ */
+function absorbBracketedRuns(
+  repository: GitHubRepository,
+  belowByEnd: ReadonlyMap<number, ChangeUnit>,
+  landings: ReadonlyArray<Landing>,
+): ReadonlyArray<Landing> {
+  const absorbed: Array<Landing> = [];
+  let run: Array<Landing> = [];
+  let belowRun: UnitKey | null = null;
+  for (const landing of landings) {
+    const last = run.at(-1) ?? absorbed.at(-1);
+    if (last === undefined || last.ordinal + 1 !== landing.ordinal) {
+      absorbed.push(...run);
+      run = [];
+      const stored = belowByEnd.get(landing.ordinal - 1);
+      belowRun = stored?.source.kind === "pull-request" ? stored.key : null;
+    }
+    const association = landing.association;
+    if (association._tag !== "PullRequest") {
+      run.push(landing);
+      continue;
+    }
+    const key = pullRequestUnitKey(repository, association.pullRequest);
+    absorbed.push(
+      ...(belowRun === key ? run.map((member) => ({ ...member, association })) : run),
+      landing,
+    );
+    run = [];
+    belowRun = key;
+  }
+  absorbed.push(...run);
+  return absorbed;
+}
+
+/**
  * Deterministic grouping over the first-parent history. Run over the same landings in one
  * batch or split across syncs, it yields the same keys and members:
  *
- * - Consecutive landings of one PR form `pr:<n>` (a rebase merge lands several).
+ * - Consecutive landings of one PR form `pr:<n>` (a rebase merge lands several), including the
+ *   direct and unresolved landings between two of them.
  * - A direct landing joins the previous unit when that is a direct push by the same author, the
  *   ordinals are adjacent and the commit times are under PUSH_GROUP_GAP_MS apart. Otherwise it
  *   starts `push:<its sha>`.
  * - An Unresolved landing is a hole: it and the unit directly above it come back in `deferred`,
  *   since once the hole resolves it may join that unit and change its key. Units further up
  *   are final, so the head of the changelog shows while older commits wait.
+ * - Fragments of one PR that other landings still separate become one unit.
  *
  * `landings` ascend by ordinal; a gap is history already grouped. `below` holds the stored
  * units ending right under a landing after such a gap, which that landing may extend.
  *
  * Returns whole replacement units, a reopened stored unit included, for an upsert keyed by
- * (repository, unit key).
+ * (repository, unit key), and the unit each grouped landing now belongs to.
  */
 export function groupChangeUnits(input: {
   readonly repository: GitHubRepository;
   readonly below: ReadonlyArray<ChangeUnit>;
   readonly landings: ReadonlyArray<Landing>;
   readonly headOrdinal?: number;
-}): { readonly units: ReadonlyArray<ChangeUnit>; readonly deferred: ReadonlyArray<Landing> } {
+}): {
+  readonly units: ReadonlyArray<ChangeUnit>;
+  readonly deferred: ReadonlyArray<Landing>;
+  readonly unitKeys: ReadonlyMap<number, UnitKey>;
+} {
   const belowByEnd = new Map(input.below.map((unit) => [unit.lastOrdinal, unit]));
-  const units: Array<ChangeUnit> = [];
+  const units = new Map<UnitKey, ChangeUnit>();
   const deferred: Array<Landing> = [];
-  let open: { readonly unit: OpenUnit; readonly held: Array<Landing> | null } | null = null;
+  const unitKeys = new Map<number, UnitKey>();
+  let open: {
+    readonly unit: OpenUnit;
+    readonly members: Array<Landing>;
+    readonly held: boolean;
+  } | null = null;
   let afterHole = false;
   let previous: Landing | null = null;
   const close = (closed: boolean) => {
     if (open === null) return;
-    if (open.held === null) units.push(finish(open.unit, closed));
-    else deferred.push(...open.held);
+    if (open.held) {
+      deferred.push(...open.members);
+    } else {
+      const unit = finish(open.unit, closed);
+      const earlier = units.get(unit.key);
+      units.set(unit.key, earlier === undefined ? unit : mergeFragments(earlier, unit));
+      for (const member of open.members) unitKeys.set(member.ordinal, unit.key);
+    }
     open = null;
   };
-  for (const landing of input.landings) {
+  for (const landing of absorbBracketedRuns(input.repository, belowByEnd, input.landings)) {
     const adjacent = previous !== null && previous.ordinal + 1 === landing.ordinal;
     previous = landing;
     if (landing.association._tag === "Unresolved") {
@@ -489,21 +584,21 @@ export function groupChangeUnits(input: {
       close(true);
       afterHole = false;
       const stored = belowByEnd.get(landing.ordinal - 1);
-      if (stored !== undefined) open = { unit: openFrom(stored), held: null };
+      if (stored !== undefined) open = { unit: openFrom(stored), members: [], held: false };
     }
     if (open !== null && joins(input.repository, open.unit, landing)) {
       extend(open.unit, landing);
-      open.held?.push(landing);
+      open.members.push(landing);
       continue;
     }
     close(true);
-    open = { unit: startUnit(input.repository, landing), held: afterHole ? [landing] : null };
+    open = { unit: startUnit(input.repository, landing), members: [landing], held: afterHole };
     afterHole = false;
   }
   close(
     input.headOrdinal !== undefined && previous !== null && previous.ordinal < input.headOrdinal,
   );
-  return { units, deferred };
+  return { units: [...units.values()], deferred, unitKeys };
 }
 
 /** Title shown before a summary exists, or when none can be written. */

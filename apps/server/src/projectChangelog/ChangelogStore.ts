@@ -274,6 +274,11 @@ export class ChangelogStore extends Context.Service<
       key: RepositoryKey,
       lastOrdinal: number,
     ) => Effect.Effect<ChangeUnit | null, ChangelogStoreError>;
+    /** The live units among `unitKeys`. */
+    readonly liveUnits: (
+      key: RepositoryKey,
+      unitKeys: ReadonlyArray<UnitKey>,
+    ) => Effect.Effect<ReadonlyArray<ChangeUnit>, ChangelogStoreError>;
     /** Commits in no unit yet, oldest first. Parents are not stored. */
     readonly ungroupedCommits: (
       key: RepositoryKey,
@@ -535,6 +540,20 @@ const make = Effect.gen(function* () {
       return row === undefined ? null : (yield* decodeEntry(row)).unit;
     },
     Effect.mapError(sqlError("getChangelogUnitEndingAt")),
+  );
+
+  const liveUnits: ChangelogStore["Service"]["liveUnits"] = Effect.fn("ChangelogStore.liveUnits")(
+    function* (key, unitKeys) {
+      if (unitKeys.length === 0) return [];
+      const rows = yield* sql<EntrySqlRow>`
+        SELECT ${entryColumns} FROM fork_changelog_entries
+        WHERE repository_key = ${key} AND removed_at IS NULL AND ${sql.in("unit_key", unitKeys)}
+      `;
+      return yield* Effect.forEach(rows, (row) =>
+        decodeEntry(row).pipe(Effect.map((entry) => entry.unit)),
+      );
+    },
+    Effect.mapError(sqlError("listLiveChangelogUnits")),
   );
 
   const ungroupedCommits: ChangelogStore["Service"]["ungroupedCommits"] = Effect.fn(
@@ -899,6 +918,7 @@ const make = Effect.gen(function* () {
     ensureRepository,
     getRepository,
     unitEndingAt,
+    liveUnits,
     ungroupedCommits,
     ordinalOf,
     applySync,

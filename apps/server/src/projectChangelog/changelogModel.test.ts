@@ -26,6 +26,7 @@ import {
   selectSummaryBatch,
   summaryAfterFailure,
   summaryHoldUntil,
+  withStoredFragments,
 } from "./changelogModel.ts";
 
 const MINUTE = 60_000;
@@ -365,6 +366,78 @@ describe("groupChangeUnits", () => {
       groupChangeUnits({ repository, below: [], landings: resolved }).units,
     );
     expect(keysOf(second.units)).toEqual([["push:p1", 1, 3, 3]]);
+  });
+
+  it("absorbs direct and unresolved commits between two commits of one pull request", () => {
+    const rebased = pull(7);
+    const { units, deferred, unitKeys } = groupChangeUnits({
+      repository,
+      below: [],
+      landings: positioned([
+        viaPull("r1", rebased),
+        direct("r2", "alice", T0),
+        unresolved("r3"),
+        viaPull("r4", rebased),
+      ]),
+    });
+    expect(keysOf(units)).toEqual([["pr:7", 1, 4, 4]]);
+    expect(units[0]!.source.commitSubjects).toEqual([
+      "subject r1",
+      "subject r2",
+      "subject r3",
+      "subject r4",
+    ]);
+    expect(deferred).toEqual([]);
+    expect([...unitKeys]).toEqual([
+      [1, "pr:7"],
+      [2, "pr:7"],
+      [3, "pr:7"],
+      [4, "pr:7"],
+    ]);
+  });
+
+  it("absorbs a resolved hole into the stored entry of the pull request below it", () => {
+    const rebased = pull(7);
+    const first = groupChangeUnits({
+      repository,
+      below: [],
+      landings: positioned([viaPull("r1", rebased), unresolved("r2"), unresolved("r3")]),
+    });
+    expect(keysOf(first.units)).toEqual([["pr:7", 1, 1, 1]]);
+    const { units } = groupChangeUnits({
+      repository,
+      below: first.units,
+      landings: positioned([direct("r2", "alice", T0), viaPull("r3", rebased)], 1),
+    });
+    expect(keysOf(units)).toEqual([["pr:7", 1, 3, 3]]);
+    expect(units[0]!.source.commitSubjects).toEqual(["subject r1", "subject r2", "subject r3"]);
+  });
+
+  it("keeps both fragments of a pull request another pull request lands between", () => {
+    const split = pull(7);
+    const { units, unitKeys } = groupChangeUnits({
+      repository,
+      below: [],
+      landings: positioned([viaPull("a", split), viaPull("b", pull(8)), viaPull("c", split)]),
+    });
+    expect(keysOf(units)).toEqual([
+      ["pr:7", 1, 3, 2],
+      ["pr:8", 2, 2, 1],
+    ]);
+    expect(units[0]!.source.commitSubjects).toEqual(["subject a", "subject c"]);
+    expect(unitKeys.get(2)).toBe("pr:8");
+
+    const stored = groupChangeUnits({
+      repository,
+      below: [],
+      landings: positioned([viaPull("a", split), viaPull("b", pull(8))]),
+    }).units;
+    const later = groupChangeUnits({
+      repository,
+      below: [stored[1]!],
+      landings: positioned([viaPull("c", split)], 2),
+    }).units;
+    expect(withStoredFragments(later, stored)).toEqual(units.toReversed());
   });
 
   it("keys another repository's pull request apart from this repository's", () => {
