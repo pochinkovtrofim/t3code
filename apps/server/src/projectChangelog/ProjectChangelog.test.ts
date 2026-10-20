@@ -688,6 +688,74 @@ describe("ProjectChangelog", () => {
     }).pipe(Effect.provide(layer), atNow);
   });
 
+  it.effect("appends a gap longer than any catch-up budget without dropping older entries", () => {
+    const { github, layer } = harness();
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      yield* changelog.read({ projectId: p1 });
+
+      const gap = 1_001;
+      for (let step = 1; step <= gap; step++) {
+        github.state.commits.push(
+          commit(`n${step}`, step === 1 ? "c4" : `n${step - 1}`, NOW + step * 1_000, "dave", "x"),
+        );
+      }
+      github.state.pullsIncompleteBefore = NOW + 24 * 60 * MINUTE;
+      yield* TestClock.adjust(16 * MINUTE);
+      for (let sync = 0; sync < 6; sync++) yield* TestClock.adjust(MINUTE);
+      yield* changelog.drain;
+      const after = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(
+        after.entries.map((entry) => [entry.id, entry.commits.count]),
+        [
+          ["push:n1", gap],
+          ["pr:8", 1],
+          ["push:c3", 1],
+          ["pr:7", 1],
+          ["push:c1", 1],
+        ],
+      );
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("appends a merge whose first-parent walk reaches a root the cursor shares", () => {
+    const { github, layer } = harness();
+    const [first, ...rest] = github.state.commits;
+    github.state.commits = [
+      commit("c0", null, NOW - 30 * 24 * 60 * MINUTE, "alice", "Initial commit"),
+      { ...first!, parentShas: ["c0"] },
+      ...rest,
+    ];
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const before = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(
+        before.entries.map((entry) => entry.id),
+        ["pr:8", "push:c3", "pr:7", "push:c1"],
+      );
+
+      // A long-lived branch off the first commit, with main merged into it, becomes main.
+      github.state.commits.push(commit("d1", "c0", NOW - 20 * MINUTE, "erin", "Rewrite parser"), {
+        ...commit("m1", "d1", NOW - 10 * MINUTE, "erin", "Merge branch 'main'"),
+        parentShas: ["d1", "c4"],
+      });
+      yield* TestClock.adjust(16 * MINUTE);
+      const after = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(
+        after.entries.map((entry) => [entry.id, entry.commits.count]),
+        [
+          ["push:d1", 2],
+          ["pr:8", 1],
+          ["push:c3", 1],
+          ["pr:7", 1],
+          ["push:c1", 1],
+        ],
+      );
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
   it.effect("renumbers a production answer it keeps across a force push", () => {
     const { github, layer } = harness();
     return Effect.gen(function* () {

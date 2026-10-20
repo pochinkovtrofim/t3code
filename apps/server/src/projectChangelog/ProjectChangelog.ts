@@ -89,7 +89,6 @@ const DEFAULT_BACKFILL_MS = 14 * 24 * 60 * 60_000;
 const DEFAULT_MAX_SYNC_COMMITS = 200;
 /** `commits/{sha}/pulls` calls per sync; the rest wait for the next one. */
 const LOOKUP_BUDGET = 30;
-const MAX_CATCH_UP_COMMITS = 1_000;
 const READ_WAIT_MS = 5_000;
 const DEFAULT_READ_LIMIT = 20;
 const MIN_TICK_MS = 5_000;
@@ -352,6 +351,28 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     } satisfies ProjectTarget;
   });
 
+  /**
+   * The newest index of `chain` (oldest first) that the cursor's history already holds, or -1.
+   * Holding a commit holds every commit below it on a first-parent chain, so this bisects.
+   */
+  const heldUpTo = Effect.fn("ProjectChangelog.heldUpTo")(function* (
+    repository: GitHubRepository,
+    chain: ReadonlyArray<LandedCommit>,
+    cursorSha: string,
+  ) {
+    const held = (index: number) =>
+      github.headContains({ repository, sha: chain[index]!.sha, headSha: cursorSha });
+    if (!(yield* held(0))) return -1;
+    let low = 0;
+    let high = chain.length - 1;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (yield* held(middle)) low = middle;
+      else high = middle - 1;
+    }
+    return low;
+  });
+
   const readNewHistory = Effect.fn("ProjectChangelog.readNewHistory")(function* (
     repository: GitHubRepository,
     cursorSha: string,
@@ -374,20 +395,17 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     if (!(yield* github.headContains({ repository, sha: cursorSha, headSha: target }))) {
       return { _tag: "Reset" } as const;
     }
+    // The head still contains the cursor, so from here history is only ever appended to.
+    if (chain.length === 0) return { _tag: "CatchingUp" } as const;
     const newestKnown = yield* Effect.findFirst(chain.toReversed(), (commit) =>
       store.ordinalOf(key, commit.sha).pipe(Effect.map((ordinal) => ordinal !== null)),
     );
-    if (Option.isSome(newestKnown)) {
-      const after = chain.indexOf(newestKnown.value) + 1;
-      return { _tag: "Append", chain: chain.slice(after), reached: target } as const;
-    }
-    const continueAt = chain[0]?.parentShas[0];
-    if (
-      continueAt === undefined ||
-      history.chain.length === 0 ||
-      chain.length >= MAX_CATCH_UP_COMMITS
-    ) {
-      return { _tag: "Reset" } as const;
+    const held = Option.isSome(newestKnown)
+      ? chain.indexOf(newestKnown.value)
+      : yield* heldUpTo(repository, chain, cursorSha);
+    const continueAt = chain[0]!.parentShas[0];
+    if (held >= 0 || continueAt === undefined) {
+      return { _tag: "Append", chain: chain.slice(held + 1), reached: target } as const;
     }
     yield* Ref.update(catchUps, (all) =>
       new Map(all).set(key, { cursorSha, targetSha: target, chain, continueAt }),
@@ -829,6 +847,11 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       const dropped = Array.from(fibers, ([key]) => key).filter((key) => !eligibleKeys.has(key));
       yield* Effect.forEach(dropped, (key) => FiberMap.remove(fibers, key), { discard: true });
     }
+    // A catch-up holds every commit read so far; one that cannot continue is only memory.
+    yield* Ref.update(
+      catchUps,
+      (all) => new Map([...all].filter(([key]) => eligibleKeys.has(key))),
+    );
     let wakeAt = now + MAX_TICK_MS;
     for (const target of current.values()) {
       if (target.eligible.length === 0) continue;
