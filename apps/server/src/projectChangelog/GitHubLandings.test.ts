@@ -268,13 +268,19 @@ describe("GitHubLandings", () => {
   it.effect("takes production from a successful deployment named production", () => {
     const { layer, requests } = harness({
       [upstreamPath("/deployments?per_page=30")]: { body: shapes.deployments },
+      [upstreamPath("/deployments?environment=production&per_page=5")]: {
+        body: shapes.deployments,
+      },
       [upstreamPath(`/deployments/${shapes.deployments[0]!.id}/statuses?per_page=1`)]: {
         body: shapes.deploymentStatuses,
       },
     });
     return Effect.gen(function* () {
       const landings = yield* GitHubLandings.GitHubLandings;
-      const production = yield* landings.readProduction(upstream);
+      const production = yield* landings.readProduction({
+        repository: upstream,
+        previousEnvironment: null,
+      });
       // GitHub reports production_environment false for this repository; the name decides.
       assert.deepStrictEqual(production, {
         deployment: {
@@ -295,6 +301,68 @@ describe("GitHubLandings", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("finds production behind a page of preview deployments", () => {
+    const [deployed] = shapes.deployments;
+    const previews = Array.from({ length: 30 }, (_, index) => ({
+      ...deployed!,
+      id: index + 1,
+      environment: `pr-${index + 1}`,
+      transient_environment: true,
+    }));
+    const { layer } = harness({
+      [upstreamPath("/deployments?per_page=30")]: { body: previews },
+      [upstreamPath("/deployments?environment=production&per_page=5")]: { body: [deployed] },
+      [upstreamPath(`/deployments/${deployed!.id}/statuses?per_page=1`)]: {
+        body: shapes.deploymentStatuses,
+      },
+    });
+    return Effect.gen(function* () {
+      const landings = yield* GitHubLandings.GitHubLandings;
+      const { deployment } = yield* landings.readProduction({
+        repository: upstream,
+        previousEnvironment: null,
+      });
+      assert(deployment._tag === "Found");
+      assert.strictEqual(deployment.value.deploymentId, deployed!.id);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("asks last sync's environment first, and never calls it absent unproven", () => {
+    const [deployed] = shapes.deployments;
+    const previews = Array.from({ length: 30 }, (_, index) => ({
+      ...deployed!,
+      id: index + 1,
+      environment: `pr-${index + 1}`,
+      transient_environment: true,
+    }));
+    const { layer, requests } = harness({
+      [upstreamPath("/deployments?environment=prod-eu&per_page=5")]: {
+        body: [{ ...deployed!, environment: "prod-eu" }],
+      },
+      [upstreamPath(`/deployments/${deployed!.id}/statuses?per_page=1`)]: {
+        body: [{ ...shapes.deploymentStatuses[0]!, state: "in_progress" }],
+      },
+      [upstreamPath("/deployments?per_page=30")]: { body: previews },
+      [upstreamPath("/deployments?environment=production&per_page=5")]: { body: [] },
+      [upstreamPath("/deployments?environment=Production&per_page=5")]: { body: [] },
+      [upstreamPath("/releases?per_page=1")]: { body: [] },
+      [upstreamPath("/tags?per_page=100")]: { body: [] },
+    });
+    return Effect.gen(function* () {
+      const landings = yield* GitHubLandings.GitHubLandings;
+      const production = yield* landings.readProduction({
+        repository: upstream,
+        previousEnvironment: "prod-eu",
+      });
+      // Still deploying is not "no production": the caller keeps last sync's answer.
+      assert.deepStrictEqual(production.deployment, { _tag: "Unavailable" });
+      assert.strictEqual(
+        requests[0]?.url,
+        upstreamPath("/deployments?environment=prod-eu&per_page=5"),
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("falls to the latest release when every deployment is transient", () => {
     const releaseSha = "81493efb71e8e8244f95d3e9f71d8369654ab151";
     const { layer } = harness({
@@ -304,13 +372,18 @@ describe("GitHubLandings", () => {
           transient_environment: true,
         })),
       },
+      [upstreamPath("/deployments?environment=production&per_page=5")]: { body: [] },
+      [upstreamPath("/deployments?environment=Production&per_page=5")]: { body: [] },
       [upstreamPath("/releases?per_page=1")]: { body: [shapes.releaseLatest] },
       [upstreamPath("/releases/latest")]: { body: shapes.releaseLatest },
       [upstreamPath("/commits/v0.1.0")]: { body: releaseSha },
     });
     return Effect.gen(function* () {
       const landings = yield* GitHubLandings.GitHubLandings;
-      const production = yield* landings.readProduction(upstream);
+      const production = yield* landings.readProduction({
+        repository: upstream,
+        previousEnvironment: null,
+      });
       assert.deepStrictEqual(production, {
         deployment: { _tag: "Absent" },
         release: {
@@ -338,7 +411,10 @@ describe("GitHubLandings", () => {
     });
     return Effect.gen(function* () {
       const landings = yield* GitHubLandings.GitHubLandings;
-      const production = yield* landings.readProduction(upstream);
+      const production = yield* landings.readProduction({
+        repository: upstream,
+        previousEnvironment: null,
+      });
       assert.deepStrictEqual(production, {
         deployment: { _tag: "Unavailable" },
         release: { _tag: "Absent" },
@@ -364,8 +440,14 @@ describe("GitHubLandings", () => {
       });
       return Effect.gen(function* () {
         const landings = yield* GitHubLandings.GitHubLandings;
-        const first = yield* landings.readProduction(upstream);
-        const second = yield* landings.readProduction(upstream);
+        const first = yield* landings.readProduction({
+          repository: upstream,
+          previousEnvironment: null,
+        });
+        const second = yield* landings.readProduction({
+          repository: upstream,
+          previousEnvironment: null,
+        });
         assert.deepStrictEqual(first.release, { _tag: "Absent" });
         assert.deepStrictEqual(second, first);
         const releaseReads = requests.filter((request) => request.url.includes("releases"));

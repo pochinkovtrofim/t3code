@@ -107,6 +107,7 @@ function makeGitHub() {
       tag: { _tag: "NotAsked" },
     } as GitHubLandings.ProductionObservations,
     calls: [] as Array<string>,
+    previousEnvironments: [] as Array<string | null>,
     /** Holds every head read until released, so a test can act while a sync is in flight. */
     headGate: null as Gate | null,
     /** Head reads left that die, as a bug in reading or applying a sync would. */
@@ -158,9 +159,10 @@ function makeGitHub() {
             ]),
           );
         }),
-      readProduction: () =>
+      readProduction: (input) =>
         Effect.sync(() => {
           state.calls.push("readProduction");
+          state.previousEnvironments.push(input.previousEnvironment);
           return state.production;
         }),
       mergeBase: () => Effect.succeed(null),
@@ -581,6 +583,33 @@ describe("ProjectChangelog", () => {
         after.entries.map((entry) => entry.inProduction),
         before.entries.map((entry) => entry.inProduction),
       );
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("asks GitHub about last sync's production environment first", () => {
+    const { github, layer } = harness();
+    github.state.production = {
+      deployment: {
+        _tag: "Found",
+        value: {
+          source: "deployment",
+          environment: "prod-eu",
+          deploymentId: 1,
+          sha: "c2",
+          at: NOW - 90 * MINUTE,
+          url: null,
+        },
+      },
+      release: { _tag: "NotAsked" },
+      tag: { _tag: "NotAsked" },
+    };
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      yield* changelog.read({ projectId: p1 });
+      yield* TestClock.adjust(16 * MINUTE);
+      yield* changelog.drain;
+      assert.deepStrictEqual(github.state.previousEnvironments, [null, "prod-eu"]);
     }).pipe(Effect.provide(layer), atNow);
   });
 

@@ -444,7 +444,11 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
 
     const previous = row.production;
     const choice = chooseProductionSource({
-      ...(yield* github.readProduction(repository)),
+      ...(yield* github.readProduction({
+        repository,
+        previousEnvironment:
+          previous?.signal.source === "deployment" ? previous.signal.environment : null,
+      })),
       previous: previous?.signal ?? null,
     });
     let production: ProductionState;

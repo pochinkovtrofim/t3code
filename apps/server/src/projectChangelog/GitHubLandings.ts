@@ -36,7 +36,12 @@ const PULL_PAGE_SIZE = 100;
 const MAX_PULL_PAGES = 3;
 /** The merged-PR list is sorted by update time, so it reads a little past the oldest commit. */
 const PULL_LIST_SLACK_MS = 24 * 60 * 60_000;
+/** Deployments per environment whose latest status is read, newest first. */
 const DEPLOYMENT_CANDIDATES = 5;
+/** Environment-filtered deployment reads per sync. */
+const MAX_ENVIRONMENT_QUERIES = 3;
+/** Asked when no recent deployment names a production environment. */
+const PRODUCTION_ENVIRONMENT_NAMES = ["production", "Production"];
 const CACHED_ANSWERS_PER_OPERATION = 256;
 const LOOKUP_CONCURRENCY = 4;
 const SHA_ACCEPT = "application/vnd.github.sha";
@@ -107,11 +112,12 @@ export class GitHubLandings extends Context.Service<
      * What each production source says, strongest first, stopping at the first one found: the
      * newest production deployment whose latest status is success, `releases/latest` (GitHub's
      * own non-draft, non-prerelease latest), then the highest tag. A source that could not be
-     * read is Unavailable, never a failed sync.
+     * read is Unavailable, never a failed sync. `previousEnvironment` is asked first.
      */
-    readonly readProduction: (
-      repository: GitHubRepository,
-    ) => Effect.Effect<ProductionObservations>;
+    readonly readProduction: (input: {
+      readonly repository: GitHubRepository;
+      readonly previousEnvironment: string | null;
+    }) => Effect.Effect<ProductionObservations>;
     /** The merge base of two commits; null when they share no history. */
     readonly mergeBase: (input: {
       readonly repository: GitHubRepository;
@@ -308,15 +314,16 @@ const make = Effect.gen(function* () {
   );
   const getDeployments = conditionalGet(
     "changelogDeployments",
-    decodeJson("changelogDeployments", Schema.Array(RestDeployment), (rows) =>
-      rows.filter((deployment) =>
+    decodeJson("changelogDeployments", Schema.Array(RestDeployment), (rows) => ({
+      any: rows.length > 0,
+      production: rows.filter((deployment) =>
         isProductionEnvironment({
           name: deployment.environment,
           productionFlag: deployment.production_environment ?? null,
           transient: deployment.transient_environment ?? null,
         }),
       ),
-    ),
+    })),
   );
   const getLatestStatus = conditionalGet(
     "changelogDeploymentStatus",
@@ -441,13 +448,20 @@ const make = Effect.gen(function* () {
     return lookups;
   });
 
-  const observeDeployment = Effect.fnUntraced(function* (repository: GitHubRepository) {
-    const production = yield* getDeployments(
+  /** The newest successful deployment to one environment, if it has any deployments. */
+  const observeEnvironment = Effect.fnUntraced(function* (
+    repository: GitHubRepository,
+    environment: string,
+  ) {
+    const { production } = yield* getDeployments(
       repository,
-      repoPath(repository, "deployments?per_page=30"),
+      repoPath(
+        repository,
+        `deployments?environment=${encodeURIComponent(environment)}&per_page=${DEPLOYMENT_CANDIDATES}`,
+      ),
     );
-    if (production.length === 0) return { _tag: "Absent" } as const;
-    for (const deployment of production.slice(0, DEPLOYMENT_CANDIDATES)) {
+    if (production.length === 0) return { _tag: "Empty" } as const;
+    for (const deployment of production) {
       const status = yield* getLatestStatus(
         repository,
         repoPath(repository, `deployments/${deployment.id}/statuses?per_page=1`),
@@ -464,8 +478,44 @@ const make = Effect.gen(function* () {
         return { _tag: "Found", value: signal } as const;
       }
     }
-    // The newest production deployments are all still running or failed: no answer yet.
-    return { _tag: "Unavailable" } as const;
+    return { _tag: "NoSuccess" } as const;
+  });
+
+  // Each environment is asked by name: preview deployments can fill any page of all of them.
+  const observeDeployment = Effect.fnUntraced(function* (
+    repository: GitHubRepository,
+    previousEnvironment: string | null,
+  ) {
+    const candidates = previousEnvironment === null ? [] : [previousEnvironment];
+    let discovered = false;
+    let deploying = false;
+    for (let asked = 0; asked < MAX_ENVIRONMENT_QUERIES; asked++) {
+      if (asked === candidates.length && !discovered) {
+        discovered = true;
+        const newest = yield* getDeployments(
+          repository,
+          repoPath(repository, "deployments?per_page=30"),
+        );
+        if (!newest.any && !deploying) return { _tag: "Absent" } as const;
+        for (const name of [
+          ...newest.production.map((deployment) => deployment.environment),
+          ...PRODUCTION_ENVIRONMENT_NAMES,
+        ]) {
+          if (!candidates.includes(name)) candidates.push(name);
+        }
+      }
+      const environment = candidates[asked];
+      if (environment === undefined) break;
+      const answer = yield* observeEnvironment(repository, environment);
+      if (answer._tag === "Found") return answer;
+      if (answer._tag === "NoSuccess") deploying = true;
+    }
+    // Production deployments that are all still running or failed are no answer yet, and
+    // neither is a search that ran out before it could rule out last sync's environment.
+    return deploying ||
+      (previousEnvironment !== null && candidates.length > MAX_ENVIRONMENT_QUERIES)
+      ? ({ _tag: "Unavailable" } as const)
+      : ({ _tag: "Absent" } as const);
   });
 
   const observeRelease = Effect.fnUntraced(function* (repository: GitHubRepository) {
@@ -510,9 +560,9 @@ const make = Effect.gen(function* () {
 
   const readProduction: GitHubLandings["Service"]["readProduction"] = Effect.fn(
     "GitHubLandings.readProduction",
-  )(function* (repository) {
+  )(function* ({ repository, previousEnvironment }) {
     const notAsked = { _tag: "NotAsked" } as const;
-    const deployment = yield* observe(observeDeployment(repository));
+    const deployment = yield* observe(observeDeployment(repository, previousEnvironment));
     if (deployment._tag === "Found") return { deployment, release: notAsked, tag: notAsked };
     const release = yield* observe(observeRelease(repository));
     if (release._tag === "Found") return { deployment, release, tag: notAsked };
