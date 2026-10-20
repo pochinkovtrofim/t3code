@@ -114,6 +114,7 @@ import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
+import * as ProjectThreadService from "./orchestration-v2/ProjectThreadService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
@@ -1216,6 +1217,7 @@ export const layerWsRpc = (
         }
       };
       const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
+      const projectThreads = yield* ProjectThreadService.ProjectThreadService;
       const commandOutputHub = yield* CommandOutputHub.CommandOutputHub;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
@@ -2591,6 +2593,16 @@ export const layerWsRpc = (
             .pipe(
               Effect.mapError(
                 (cause) => new OrchestrationDispatchCommandError({ message: cause.message, cause }),
+              ),
+            ),
+        [WS_METHODS.projectThreadsEnsure]: (input) =>
+          projectThreads
+            .ensure(input)
+            .pipe(
+              Effect.mapError((cause) =>
+                cause._tag === "ProjectThreadDisabledError"
+                  ? cause
+                  : new OrchestrationDispatchCommandError({ message: cause.message, cause }),
               ),
             ),
         [WS_METHODS.projectCloneCancel]: (input) =>

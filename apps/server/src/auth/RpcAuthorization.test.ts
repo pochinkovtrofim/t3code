@@ -90,6 +90,12 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("requires operate access to create or reopen a project thread", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectThreadsEnsure)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("separates ACP Registry discovery from provisioning", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.serverSearchAcpRegistry)).toBe(
       AuthOrchestrationReadScope,

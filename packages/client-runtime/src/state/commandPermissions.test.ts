@@ -137,6 +137,32 @@ describe("command permissions", () => {
     ),
   );
 
+  it.effect("requires the destination operate grant to open a project thread", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const ensure = createCommandPermissions(runtime, WS_METHODS.projectThreadsEnsure);
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(false),
+            scopes: [AuthOrchestrationReadScope],
+            permissions: [AuthOrchestrationReadScope],
+          }),
+        );
+        expect(registry.get(ensure.permissionAtom(env))).toBe(false);
+        expect((yield* ensure.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(ensure.permissionAtom(env))).toBe(true);
+        yield* ensure.authorize(registry, env);
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        expect(registry.get(ensure.permissionAtom(other))).toBe(false);
+      }),
+    ),
+  );
+
   it.effect("uses the target grant for both availability and execution", () =>
     Effect.scoped(
       Effect.gen(function* () {
