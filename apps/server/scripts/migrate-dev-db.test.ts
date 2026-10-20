@@ -136,6 +136,58 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
     }),
   );
 
+  it.effect("leaves out the source home's scratch project and its threads", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const sourceDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-scratch-" });
+      const destDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-scratch-dest-" });
+      const source = yield* createFixtureSource(sourceDir);
+      yield* withDatabase(
+        source,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`INSERT INTO projection_projects
+            (project_id, title, workspace_root, scripts_json, created_at, updated_at, deleted_at)
+            VALUES ('project-scratch', 'No project', ${path.join(sourceDir, "scratch")}, '[]',
+              '2026-08-01', '2026-08-09', NULL)`;
+          yield* sql`INSERT INTO orchestration_v2_projection_threads
+            (thread_id, project_id, title, default_provider, runtime_mode, interaction_mode, created_at, updated_at, payload_json)
+            VALUES ('scratch-thread', 'project-scratch', 'scratch-thread', 'codex', 'full-access',
+              'default', '2026-08-01', '2026-08-09', '{}')`;
+          yield* sql`INSERT INTO orchestration_events
+            (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json)
+            VALUES ('event-project-scratch', 'project', 'project-scratch', 0, 'project.created',
+              '2026-08-01', 'user', '{}', '{}')`;
+        }),
+      );
+
+      const result = yield* runMigrateDevDb(
+        { baseDir: destDir, source, projects: 1, threadsPerProject: 10 },
+        { sharedHome: sourceDir },
+      );
+
+      assert.deepStrictEqual(
+        result.projects.map((project) => project.title),
+        ["Kept"],
+      );
+      const scratchRows = yield* withDatabase(
+        result.databasePath,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const [row] = yield* sql<{ count: number }>`
+            SELECT
+              (SELECT COUNT(*) FROM orchestration_v2_projection_threads WHERE thread_id = 'scratch-thread')
+              + (SELECT COUNT(*) FROM orchestration_events
+                WHERE stream_id IN ('scratch-thread', 'project-scratch'))
+              AS count`;
+          return row?.count;
+        }),
+      );
+      assert.equal(scratchRows, 0);
+    }),
+  );
+
   it.effect("never copies a settled thread's rows, and new events append after the source's", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
