@@ -96,6 +96,15 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("lets read access read and watch a project changelog", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectChangelogRead)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.projectChangelogWatch)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
   it("separates ACP Registry discovery from provisioning", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.serverSearchAcpRegistry)).toBe(
       AuthOrchestrationReadScope,

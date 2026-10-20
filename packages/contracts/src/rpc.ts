@@ -377,6 +377,12 @@ import {
   ProjectThreadEnsureInput,
   ProjectThreadEnsureResult,
 } from "./projectThread.ts";
+import {
+  ProjectChangelogError,
+  ProjectChangelogPage,
+  ProjectChangelogReadInput,
+  ProjectChangelogWatchInput,
+} from "./projectChangelog.ts";
 
 export const WS_METHODS = {
   projectsList: "projects.list",
@@ -392,6 +398,8 @@ export const WS_METHODS = {
   projectsEnsureScratch: "projects.ensureScratch",
   projectsCreateNew: "projects.createNew",
   projectThreadsEnsure: "projectThreads.ensure",
+  projectChangelogRead: "projectChangelog.read",
+  projectChangelogWatch: "projectChangelog.watch",
 
   shellOpenInEditor: "shell.openInEditor",
 
@@ -1256,6 +1264,20 @@ const WsProjectThreadsEnsureRpc = Rpc.make(WS_METHODS.projectThreadsEnsure, {
   ]),
 });
 
+const WsProjectChangelogReadRpc = Rpc.make(WS_METHODS.projectChangelogRead, {
+  payload: ProjectChangelogReadInput,
+  success: ProjectChangelogPage,
+  error: Schema.Union([ProjectChangelogError, EnvironmentAuthorizationError]),
+});
+
+/** The head page now, then again whenever it changes. */
+const WsProjectChangelogWatchRpc = Rpc.make(WS_METHODS.projectChangelogWatch, {
+  payload: ProjectChangelogWatchInput,
+  success: ProjectChangelogPage,
+  error: Schema.Union([ProjectChangelogError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 const WsProjectsCreateNewRpc = Rpc.make(WS_METHODS.projectsCreateNew, {
   payload: ProjectCreateNewInput,
   success: ProjectCreateNewResult,
@@ -1991,6 +2013,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsEnsureScratchRpc,
   WsProjectsCreateNewRpc,
   WsProjectThreadsEnsureRpc,
+  WsProjectChangelogReadRpc,
+  WsProjectChangelogWatchRpc,
   WsProjectsWriteFileRpc,
   WsProjectsMutateRpc,
   WsShellOpenInEditorRpc,
