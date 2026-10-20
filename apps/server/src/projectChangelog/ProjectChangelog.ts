@@ -116,6 +116,8 @@ export class ProjectChangelog extends Context.Service<
     readonly watch: (
       input: ProjectChangelogWatchInput,
     ) => Stream.Stream<ProjectChangelogPage, ProjectChangelogError>;
+    /** Waits until no sync or summary pass is running. Tests await it instead of sleeping. */
+    readonly drain: Effect.Effect<void>;
   }
 >()("t3/projectChangelog/ProjectChangelog") {}
 
@@ -219,8 +221,8 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
   const textGeneration = yield* TextGeneration.TextGeneration;
   const pullRequests = yield* PullRequestService.PullRequestService;
 
-  const syncs = yield* FiberMap.make<RepositoryKey>();
-  const summaryPasses = yield* FiberMap.make<RepositoryKey>();
+  const syncs = yield* FiberMap.make<RepositoryKey, void, never>();
+  const summaryPasses = yield* FiberMap.make<RepositoryKey, void, never>();
   const modelSlots = yield* Semaphore.make(MODEL_CALL_CONCURRENCY);
   /** A repository's page may have changed. Sliding: a slow watcher re-reads, it never lags. */
   const changes = yield* PubSub.sliding<RepositoryKey>(256);
@@ -663,14 +665,14 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
             errorTag: error._tag,
           }),
         ),
+        // The summary pass is registered before readers hear the sync finished, so a drain
+        // that follows a read also waits for it.
         Effect.ensuring(
-          PubSub.publish(syncsDone, target.repository.key).pipe(
+          FiberMap.run(summaryPasses, target.repository.key, summarizeRepository(target), {
+            onlyIfMissing: true,
+          }).pipe(
             Effect.andThen(publishChange(target.repository.key)),
-            Effect.andThen(
-              FiberMap.run(summaryPasses, target.repository.key, summarizeRepository(target), {
-                onlyIfMissing: true,
-              }),
-            ),
+            Effect.andThen(PubSub.publish(syncsDone, target.repository.key)),
           ),
         ),
       ),
@@ -694,16 +696,24 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
           ? Math.max(Math.min(row.nextSyncAt, attempted + ACTIVE_SYNC_INTERVAL_MS), retryAt)
           : row.nextSyncAt;
       if (asked.has(key) || dueAt <= now) {
+        // The sync starts the summary pass once it has applied what it read.
         yield* FiberMap.run(syncs, key, syncRepository(target), { onlyIfMissing: true });
         yield* publishChange(key);
-      } else {
-        wakeAt = Math.min(wakeAt, dueAt);
+        continue;
       }
+      wakeAt = Math.min(wakeAt, dueAt);
       yield* FiberMap.run(summaryPasses, key, summarizeRepository(target), {
         onlyIfMissing: true,
       });
     }
     return Math.min(Math.max(wakeAt - now, MIN_TICK_MS), MAX_TICK_MS);
+  });
+
+  const drain = Effect.gen(function* () {
+    while ((yield* FiberMap.size(syncs)) + (yield* FiberMap.size(summaryPasses)) > 0) {
+      yield* FiberMap.awaitEmpty(syncs);
+      yield* FiberMap.awaitEmpty(summaryPasses);
+    }
   });
 
   const loop = Effect.gen(function* () {
@@ -964,7 +974,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       }),
     );
 
-  return ProjectChangelog.of({ read, watch });
+  return ProjectChangelog.of({ read, watch, drain });
 });
 
 /** Everything but GitHub, so tests can script GitHub's answers. */

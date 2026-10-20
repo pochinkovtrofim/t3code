@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   type OrchestrationProjectShell,
+  type ProjectChangelogPage,
   ProjectId,
   type RepositoryIdentity,
   TextGenerationError,
@@ -8,10 +9,13 @@ import {
 import type { ChangelogSummaryGenerationInput } from "@t3tools/provider-core/server/changelogPrompt";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -76,6 +80,13 @@ const pull = (number: number, mergeCommitSha: string, at: number): MergedPullReq
   baseRef: "main",
 });
 
+interface Gate {
+  readonly entered: Deferred.Deferred<void>;
+  readonly release: Deferred.Deferred<void>;
+}
+
+const makeGate = Effect.all({ entered: Deferred.make<void>(), release: Deferred.make<void>() });
+
 /** A scripted GitHub: one repository whose history and answers a test can change. */
 function makeGitHub() {
   const state = {
@@ -96,13 +107,19 @@ function makeGitHub() {
       tag: { _tag: "NotAsked" },
     } as GitHubLandings.ProductionObservations,
     calls: [] as Array<string>,
+    /** Holds every head read until released, so a test can act while a sync is in flight. */
+    headGate: null as Gate | null,
   };
   const layer = Layer.succeed(
     GitHubLandings.GitHubLandings,
     GitHubLandings.GitHubLandings.of({
       readHead: () =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
           state.calls.push("readHead");
+          if (state.headGate !== null) {
+            yield* Deferred.succeed(state.headGate.entered, undefined);
+            yield* Deferred.await(state.headGate.release);
+          }
           return { defaultBranch: "main", headSha: state.commits.at(-1)!.sha };
         }),
       readHistory: (input) =>
@@ -151,24 +168,27 @@ function makeModel() {
   const state = { failing: false };
   const layer = Layer.mock(TextGeneration.TextGeneration)({
     generateChangelogSummaries: (input) =>
-      Effect.suspend(() => {
-        calls.push(input);
-        return state.failing
-          ? Effect.fail(
-              new TextGenerationError({
-                operation: "generateChangelogSummaries",
-                detail: "provider unavailable",
-              }),
-            )
-          : Effect.succeed({
-              entries: input.units.map((unit) => ({
-                key: unit.key,
-                title: `Summary title for ${unit.key}`,
-                summary: `What ${unit.key} changed.`,
-                category: "improvement" as const,
-              })),
-            });
-      }),
+      // A real call suspends on a subprocess; yielding keeps the pass from finishing inside the sync.
+      Effect.yieldNow.pipe(
+        Effect.andThen(() => {
+          calls.push(input);
+          return state.failing
+            ? Effect.fail(
+                new TextGenerationError({
+                  operation: "generateChangelogSummaries",
+                  detail: "provider unavailable",
+                }),
+              )
+            : Effect.succeed({
+                entries: input.units.map((unit) => ({
+                  key: unit.key,
+                  title: `Summary title for ${unit.key}`,
+                  summary: `What ${unit.key} changed.`,
+                  category: "improvement" as const,
+                })),
+              });
+        }),
+      ),
   });
   return { calls, state, layer };
 }
@@ -256,15 +276,23 @@ const insertThread = (input: {
     `;
   });
 
-/** Polls a condition the background fibers make true. */
-const eventually = <A, E, R>(check: Effect.Effect<A | null, E, R>) =>
+/** Takes pages off a watch until one satisfies `done`; each take waits for the next emission. */
+const takeUntil = (
+  pages: Queue.Queue<ProjectChangelogPage>,
+  done: (page: ProjectChangelogPage) => boolean,
+): Effect.Effect<ProjectChangelogPage> =>
+  Queue.take(pages).pipe(
+    Effect.flatMap((page) => (done(page) ? Effect.succeed(page) : takeUntil(pages, done))),
+  );
+
+const watchInto = (changelog: ProjectChangelog.ProjectChangelog["Service"], projectId: ProjectId) =>
   Effect.gen(function* () {
-    for (let attempt = 0; attempt < 200; attempt++) {
-      const value = yield* check;
-      if (value !== null) return value;
-      yield* TestClock.withLive(Effect.sleep(5));
-    }
-    return yield* Effect.die("condition never held");
+    const pages = yield* Queue.unbounded<ProjectChangelogPage>();
+    const fiber = yield* changelog.watch({ projectId }).pipe(
+      Stream.runForEach((page) => Queue.offer(pages, page)),
+      Effect.forkChild,
+    );
+    return { pages, fiber };
   });
 
 const p1 = ProjectId.make("p1");
@@ -302,15 +330,9 @@ describe("ProjectChangelog", () => {
         stale: false,
       });
 
-      const summarized = yield* eventually(
-        changelog
-          .read({ projectId: p1 })
-          .pipe(
-            Effect.map((page) =>
-              page.entries.every((entry) => entry.summaryState === "ready") ? page : null,
-            ),
-          ),
-      );
+      yield* changelog.drain;
+      const summarized = yield* changelog.read({ projectId: p1 });
+      assert.isTrue(summarized.entries.every((entry) => entry.summaryState === "ready"));
       assert.strictEqual(model.calls.length, 1);
       assert.deepStrictEqual(
         model.calls[0]!.units.map((unit) => unit.key),
@@ -348,7 +370,8 @@ describe("ProjectChangelog", () => {
       yield* insertThread({ id: "project-thread:one", project: "p1" });
       const changelog = yield* ProjectChangelog.ProjectChangelog;
       yield* changelog.read({ projectId: p1 });
-      yield* eventually(Effect.sync(() => (model.calls.length > 0 ? true : null)));
+      yield* changelog.drain;
+      assert.strictEqual(model.calls.length, 1);
       // The loop passes every minute; none of them calls the failing model again yet.
       yield* TestClock.adjust(3 * MINUTE);
       assert.strictEqual(model.calls.length, 1);
@@ -358,15 +381,9 @@ describe("ProjectChangelog", () => {
 
       model.state.failing = false;
       yield* TestClock.adjust(30 * MINUTE);
-      const ready = yield* eventually(
-        changelog
-          .read({ projectId: p1 })
-          .pipe(
-            Effect.map((page) =>
-              page.entries.every((entry) => entry.summaryState === "ready") ? page : null,
-            ),
-          ),
-      );
+      yield* changelog.drain;
+      const ready = yield* changelog.read({ projectId: p1 });
+      assert.isTrue(ready.entries.every((entry) => entry.summaryState === "ready"));
       assert.strictEqual(ready.entries[0]!.title, "Summary title for pr:8");
     }).pipe(Effect.provide(layer), atNow);
   });
@@ -383,13 +400,12 @@ describe("ProjectChangelog", () => {
         blocked.entries.map((entry) => entry.id),
         ["pr:7", "push:c1"],
       );
-      const unblocked = yield* eventually(
-        Effect.gen(function* () {
-          yield* TestClock.adjust(16 * MINUTE);
-          const page = yield* changelog.read({ projectId: p1 });
-          return page.entries.length === 4 ? page : null;
-        }),
-      );
+      // Waiting commits put the repository on the one-minute cadence: two more syncs, two more
+      // failed lookups, and the commit counts as a direct push.
+      yield* TestClock.adjust(MINUTE);
+      yield* TestClock.adjust(MINUTE);
+      yield* changelog.drain;
+      const unblocked = yield* changelog.read({ projectId: p1 });
       assert.deepStrictEqual(
         unblocked.entries.map((entry) => entry.id),
         ["pr:8", "push:c3", "pr:7", "push:c1"],
@@ -448,8 +464,9 @@ describe("ProjectChangelog", () => {
     return Effect.gen(function* () {
       yield* insertThread({ id: "project-thread:one", project: "p1" });
       yield* TestClock.adjust(MINUTE);
-      yield* eventually(Effect.sync(() => (model.calls.length > 0 ? true : null)));
+      yield* (yield* ProjectChangelog.ProjectChangelog).drain;
       assert.isTrue(github.state.calls.includes("readHistory"));
+      assert.strictEqual(model.calls.length, 1);
     }).pipe(Effect.provide(layer), atNow);
   });
 
@@ -468,15 +485,9 @@ describe("ProjectChangelog", () => {
 
       github.state.calls.length = 0;
       yield* TestClock.adjust(16 * MINUTE);
-      yield* eventually(
-        changelog
-          .read({ projectId: p1 })
-          .pipe(
-            Effect.map((page) =>
-              page.sync.lastSyncedAt !== first.sync.lastSyncedAt ? page : null,
-            ),
-          ),
-      );
+      yield* changelog.drain;
+      const later = yield* changelog.read({ projectId: p1 });
+      assert.notStrictEqual(later.sync.lastSyncedAt, first.sync.lastSyncedAt);
       assert.deepStrictEqual([...new Set(github.state.calls)].toSorted(), [
         "readHead",
         "readProduction",
@@ -548,6 +559,89 @@ describe("ProjectChangelog", () => {
       );
       assert.strictEqual(pages.at(-1)!.entries.length, 5);
       assert.isFalse(pages.at(-1)!.entries[0]!.inProduction);
+    }).pipe(Effect.provide(layer), atNow);
+  });
+  it.effect("waits five seconds for a sync, then answers with what it has", () => {
+    const { github, layer } = harness();
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const gate = yield* makeGate;
+      github.state.headGate = gate;
+      const reading = yield* Effect.forkChild(changelog.read({ projectId: p1 }));
+      yield* Deferred.await(gate.entered);
+      yield* TestClock.adjust(4_999);
+      assert.isUndefined(reading.pollUnsafe());
+      yield* TestClock.adjust(1);
+      const early = yield* Fiber.join(reading);
+      assert.deepStrictEqual(early.entries, []);
+      assert.isNull(early.sync.lastSyncedAt);
+      assert.isTrue(early.sync.syncing);
+
+      yield* Deferred.succeed(gate.release, undefined);
+      yield* changelog.drain;
+      const later = yield* changelog.read({ projectId: p1 });
+      assert.strictEqual(later.entries.length, 4);
+      assert.isFalse(later.sync.syncing);
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("reads GitHub once for two projects on one repository", () => {
+    const { github, layer } = harness({ projects: [shell("p1"), shell("p2")] });
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      yield* insertThread({ id: "project-thread:two", project: "p2" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const gate = yield* makeGate;
+      github.state.headGate = gate;
+      const first = yield* Effect.forkChild(changelog.read({ projectId: p1 }));
+      const second = yield* Effect.forkChild(changelog.read({ projectId: ProjectId.make("p2") }));
+      yield* Deferred.await(gate.entered);
+      yield* Deferred.succeed(gate.release, undefined);
+      const pages = yield* Fiber.joinAll([first, second]);
+      assert.deepStrictEqual(
+        pages.map((page) => page.entries.length),
+        [4, 4],
+      );
+      assert.strictEqual(github.state.calls.filter((call) => call === "readHead").length, 1);
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("syncs every minute while any watch is open, and every fifteen after", () => {
+    const { github, layer } = harness();
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      yield* changelog.read({ projectId: p1 });
+      yield* changelog.drain;
+      const left = yield* watchInto(changelog, p1);
+      const right = yield* watchInto(changelog, p1);
+      yield* takeUntil(left.pages, (page) => page.entries.length === 4);
+      yield* takeUntil(right.pages, (page) => page.entries.length === 4);
+
+      github.state.commits.push(commit("c5", "c4", NOW + MINUTE, "web-flow", "Ship exports (#9)"));
+      github.state.pulls.push(pull(9, "c5", NOW + MINUTE));
+      yield* TestClock.adjust(MINUTE);
+      yield* takeUntil(left.pages, (page) => page.entries[0]?.id === "pr:9");
+      yield* takeUntil(right.pages, (page) => page.entries[0]?.id === "pr:9");
+
+      // One watch closing leaves the other on the one-minute cadence.
+      yield* Fiber.interrupt(left.fiber);
+      github.state.commits.push(commit("c6", "c5", NOW + 2 * MINUTE, "web-flow", "Fix (#10)"));
+      github.state.pulls.push(pull(10, "c6", NOW + 2 * MINUTE));
+      yield* TestClock.adjust(MINUTE);
+      yield* takeUntil(right.pages, (page) => page.entries[0]?.id === "pr:10");
+
+      // With no watch left, the sync already scheduled runs, then the cadence is fifteen minutes.
+      yield* Fiber.interrupt(right.fiber);
+      yield* TestClock.adjust(MINUTE);
+      yield* changelog.drain;
+      github.state.calls.length = 0;
+      yield* TestClock.adjust(10 * MINUTE);
+      assert.deepStrictEqual(github.state.calls, []);
+      yield* TestClock.adjust(6 * MINUTE);
+      yield* changelog.drain;
+      assert.isTrue(github.state.calls.includes("readHead"));
     }).pipe(Effect.provide(layer), atNow);
   });
 });
