@@ -25,6 +25,7 @@ import {
   resolveGitHubRepository,
   selectSummaryBatch,
   summaryAfterFailure,
+  summaryHoldUntil,
 } from "./changelogModel.ts";
 
 const MINUTE = 60_000;
@@ -542,6 +543,12 @@ describe("cadence and summaries", () => {
       _tag: "Unavailable",
       attempts: 3,
     });
+  });
+
+  it("holds a repository whose model calls fail outright for longer each time, up to an hour", () => {
+    expect(
+      [1, 2, 3, 4, 5, 9].map((failures) => (summaryHoldUntil({ failures, now: T0 }) - T0) / MINUTE),
+    ).toEqual([5, 10, 20, 40, 60, 60]);
   });
 
   it("backs off an uncharged failure without spending an attempt", () => {

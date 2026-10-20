@@ -393,6 +393,28 @@ describe("ProjectChangelog", () => {
     }).pipe(Effect.provide(layer), atNow);
   });
 
+  it.effect("rides out a provider outage without giving up on any entry", () => {
+    const { model, layer } = harness();
+    model.state.failing = true;
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      yield* changelog.read({ projectId: p1 });
+      yield* TestClock.adjust(40 * MINUTE);
+      yield* changelog.drain;
+      // The hold grows with each failed call, so forty minutes cost a handful of calls.
+      assert.isAtMost(model.calls.length, 4);
+      const during = yield* changelog.read({ projectId: p1 });
+      assert.isTrue(during.entries.every((entry) => entry.summaryState === "pending"));
+
+      model.state.failing = false;
+      yield* TestClock.adjust(60 * MINUTE);
+      yield* changelog.drain;
+      const after = yield* changelog.read({ projectId: p1 });
+      assert.isTrue(after.entries.every((entry) => entry.summaryState === "ready"));
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
   it.effect("keeps retrying an entry the model answered twice instead of giving up on it", () => {
     const { model, layer } = harness();
     model.state.contested = new Set(["pr:8"]);

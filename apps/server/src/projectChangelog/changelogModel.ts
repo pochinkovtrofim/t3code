@@ -684,6 +684,17 @@ export function summaryAfterFailure(input: {
   return { _tag: "Retry", attempts, nextAttemptAt: input.now + delay };
 }
 
+const SUMMARY_HOLD_MS = 5 * 60_000;
+const MAX_SUMMARY_HOLD_MS = 60 * 60_000;
+
+/**
+ * When a repository's summaries may call the model again after `failures` whole calls failed in a
+ * row (provider down, signed out): five minutes, doubling up to an hour.
+ */
+export function summaryHoldUntil(input: { readonly failures: number; readonly now: number }) {
+  return input.now + Math.min(SUMMARY_HOLD_MS * 2 ** (input.failures - 1), MAX_SUMMARY_HOLD_MS);
+}
+
 /**
  * The next batch for one repository from settled, due candidates ordered newest first, cut at
  * either cap. Newest first so a fresh backfill summarizes what the user looks at first. The

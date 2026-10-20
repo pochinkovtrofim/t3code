@@ -71,6 +71,7 @@ import {
   resolveGitHubRepository,
   selectSummaryBatch,
   SUMMARY_BATCH_UNITS,
+  summaryHoldUntil,
   type UnitKey,
 } from "./changelogModel.ts";
 import * as GitHubLandings from "./GitHubLandings.ts";
@@ -96,8 +97,6 @@ const MAX_ENTRY_THREADS = 5;
 const PROMPT_THREADS = 2;
 const DIGEST_REQUEST_CHARS = 700;
 const DIGEST_REPLY_CHARS = 1_200;
-/** After a failed model call, a repository's summaries wait this long before the next try. */
-const SUMMARY_FAILURE_HOLD_MS = 5 * 60_000;
 
 export class ProjectChangelog extends Context.Service<
   ProjectChangelog,
@@ -233,7 +232,10 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
   const nudged = yield* Ref.make<ReadonlySet<RepositoryKey>>(new Set());
   const watchers = yield* Ref.make<ReadonlyMap<RepositoryKey, number>>(new Map());
   const targets = yield* Ref.make<ReadonlyMap<RepositoryKey, RepositoryTarget>>(new Map());
-  const summariesHeldUntil = yield* Ref.make<ReadonlyMap<RepositoryKey, number>>(new Map());
+  /** Repositories whose last model calls failed outright, and how many in a row. */
+  const summaryHolds = yield* Ref.make<
+    ReadonlyMap<RepositoryKey, { readonly until: number; readonly failures: number }>
+  >(new Map());
 
   const publishChange = (key: RepositoryKey) => PubSub.publish(changes, key).pipe(Effect.asVoid);
   const nudge = (key: RepositoryKey) =>
@@ -241,6 +243,11 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       Effect.andThen(Queue.offer(wake, undefined)),
       Effect.asVoid,
     );
+  const holdSummaries = (key: RepositoryKey, now: number) =>
+    Ref.update(summaryHolds, (holds) => {
+      const failures = (holds.get(key)?.failures ?? 0) + 1;
+      return new Map(holds).set(key, { failures, until: summaryHoldUntil({ failures, now }) });
+    });
   const isWatched = (key: RepositoryKey) =>
     Ref.get(watchers).pipe(Effect.map((counts) => (counts.get(key) ?? 0) > 0));
 
@@ -535,7 +542,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       const key = target.repository.key;
       const owner = ownerProject(target.eligible);
       if (owner === null) return;
-      const heldUntil = (yield* Ref.get(summariesHeldUntil)).get(key) ?? 0;
+      const heldUntil = (yield* Ref.get(summaryHolds)).get(key)?.until ?? 0;
       if (heldUntil > (yield* Clock.currentTimeMillis)) return;
       for (;;) {
         const pending = yield* store.pendingSummaries({
@@ -566,21 +573,22 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
           )
           .pipe(Effect.result);
         const now = yield* Clock.currentTimeMillis;
-        const answers =
-          generated._tag === "Success"
-            ? new Map(generated.success.entries.map((answer) => [answer.key, answer]))
-            : new Map();
-        const contested = new Set(generated._tag === "Success" ? generated.success.contested : []);
         if (generated._tag === "Failure") {
           yield* Effect.logWarning("project changelog summaries failed", {
             repository: key,
             detail: generated.failure.detail,
           });
-          // One failing provider should cost one call per hold, not one per pending batch.
-          yield* Ref.update(summariesHeldUntil, (held) =>
-            new Map(held).set(key, now + SUMMARY_FAILURE_HOLD_MS),
-          );
+          // The provider failed, not the entries: hold the repository and spend no attempts.
+          yield* holdSummaries(key, now);
+          return;
         }
+        yield* Ref.update(summaryHolds, (holds) => {
+          const next = new Map(holds);
+          next.delete(key);
+          return next;
+        });
+        const answers = new Map(generated.success.entries.map((answer) => [answer.key, answer]));
+        const contested = new Set(generated.success.contested);
         yield* store.writeSummaries({
           key,
           now,
@@ -616,7 +624,6 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
           ),
         });
         yield* publishChange(key);
-        if (generated._tag === "Failure") return;
       }
     },
     (effect, target) =>
