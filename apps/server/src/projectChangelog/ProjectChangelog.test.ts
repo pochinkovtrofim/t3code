@@ -108,6 +108,7 @@ function makeGitHub() {
     } as GitHubLandings.ProductionObservations,
     calls: [] as Array<string>,
     previousEnvironments: [] as Array<string | null>,
+    mergeBases: new Map<string, string>(),
     /** Holds every head read until released, so a test can act while a sync is in flight. */
     headGate: null as Gate | null,
     /** Head reads left that die, as a bug in reading or applying a sync would. */
@@ -165,7 +166,7 @@ function makeGitHub() {
           state.previousEnvironments.push(input.previousEnvironment);
           return state.production;
         }),
-      mergeBase: () => Effect.succeed(null),
+      mergeBase: (input) => Effect.succeed(state.mergeBases.get(input.sha) ?? null),
     }),
   );
   return { state, layer };
@@ -582,6 +583,103 @@ describe("ProjectChangelog", () => {
       assert.deepStrictEqual(
         after.entries.map((entry) => entry.inProduction),
         before.entries.map((entry) => entry.inProduction),
+      );
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("renumbers a production answer it keeps across a force push", () => {
+    const { github, layer } = harness();
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const before = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(
+        before.entries.map((entry) => entry.inProduction),
+        [false, false, true, true],
+      );
+
+      // The release's commit is gone from the rewritten history, and releases cannot be read.
+      github.state.commits = [
+        commit("x1", null, NOW - 50 * MINUTE, "alice", "Start over"),
+        commit("x2", "x1", NOW - 40 * MINUTE, "alice", "Add search"),
+        commit("x3", "x2", NOW - 20 * MINUTE, "alice", "Add exports"),
+      ];
+      github.state.production = {
+        deployment: { _tag: "Absent" },
+        release: { _tag: "Unavailable" },
+        tag: { _tag: "NotAsked" },
+      };
+      yield* TestClock.adjust(16 * MINUTE);
+      const rewritten = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(
+        rewritten.entries.map((entry) => entry.commits.headSha),
+        ["x3", "x2"],
+      );
+      assert.isTrue(rewritten.entries.every((entry) => !entry.inProduction));
+      assert.isTrue(rewritten.production?.stale);
+
+      // The release comes back unchanged: still not on the rewritten history.
+      github.state.production = {
+        deployment: { _tag: "Absent" },
+        release: {
+          _tag: "Found",
+          value: { source: "release", tag: "v1.0.0", sha: "c2", at: NOW - 100 * MINUTE, url: "u" },
+        },
+        tag: { _tag: "NotAsked" },
+      };
+      yield* TestClock.adjust(16 * MINUTE);
+      const recovered = yield* changelog.read({ projectId: p1 });
+      assert.isFalse(recovered.production?.stale);
+      assert.isTrue(recovered.entries.every((entry) => !entry.inProduction));
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("moves production when the default branch catches up with a deployed branch", () => {
+    const { github, layer } = harness();
+    // Deployed from a branch that forked from main at c3.
+    github.state.mergeBases.set("b1", "c3");
+    github.state.production = {
+      deployment: {
+        _tag: "Found",
+        value: {
+          source: "deployment",
+          environment: "production",
+          deploymentId: 1,
+          sha: "b1",
+          at: NOW - 20 * MINUTE,
+          url: null,
+        },
+      },
+      release: { _tag: "NotAsked" },
+      tag: { _tag: "NotAsked" },
+    };
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const before = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(
+        before.entries.map((entry) => [entry.id, entry.inProduction]),
+        [
+          ["pr:8", false],
+          ["push:c3", true],
+          ["pr:7", true],
+          ["push:c1", true],
+        ],
+      );
+
+      // main fast-forwards to the deployed commit.
+      github.state.commits.push(commit("b1", "c4", NOW - 20 * MINUTE, "dave", "Hotfix"));
+      yield* TestClock.adjust(16 * MINUTE);
+      const after = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(
+        after.entries.map((entry) => [entry.id, entry.inProduction]),
+        [
+          ["push:b1", true],
+          ["pr:8", true],
+          ["push:c3", true],
+          ["pr:7", true],
+          ["push:c1", true],
+        ],
       );
     }).pipe(Effect.provide(layer), atNow);
   });

@@ -68,6 +68,7 @@ import {
   MAX_UNIT_AUTHORS,
   nextSyncAt,
   ownerProject,
+  type ProductionSignal,
   type ProductionState,
   type RepositoryKey,
   resolveGitHubRepository,
@@ -321,18 +322,6 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     } satisfies ProjectTarget;
   });
 
-  const watermarkOf = Effect.fn("ProjectChangelog.watermarkOf")(function* (
-    repository: GitHubRepository,
-    sha: string,
-    headSha: string,
-  ) {
-    const onChain = yield* store.ordinalOf(repository.key, sha);
-    if (onChain !== null) return onChain;
-    // Deployed from a release branch or a PR branch: what it shares with the default branch.
-    const base = yield* github.mergeBase({ repository, sha, headSha });
-    return base === null ? null : yield* store.ordinalOf(repository.key, base);
-  });
-
   /** Reads GitHub once and applies what it learned. `backlog`: commits still wait. */
   const readGitHub = Effect.fn("ProjectChangelog.readGitHub")(function* (
     repository: GitHubRepository,
@@ -423,26 +412,38 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
         })),
       ),
     ];
-    let backlog = false;
-    // A first sync with nothing in the window still records the head, or every later sync
-    // would read the history again.
-    if (reset || cursor === null || landings.length > 0) {
-      const tail = reset ? null : yield* store.tail(key);
-      const { units, deferred } = groupChangeUnits({ repository, tail, landings });
-      const unitKeyOf = unitKeyByOrdinal(units);
-      yield* store.applySync({
-        key,
-        defaultBranch: head.defaultBranch,
-        cursor: { headSha: head.headSha, headOrdinal: base + fresh.length },
-        reset,
-        commits: landings.map((landing) => ({ landing, unitKey: unitKeyOf(landing.ordinal) })),
-        units,
-        now,
-      });
-      backlog = deferred.length > 0;
-    }
-
+    // Ordinals in the numbering this sync leaves behind: a reset renumbers everything.
+    const ordinals = new Map(landings.map((landing) => [landing.sha, landing.ordinal]));
+    const ordinalOf = (sha: string) => {
+      const known = ordinals.get(sha);
+      return known !== undefined || reset
+        ? Effect.succeed(known ?? null)
+        : store.ordinalOf(key, sha);
+    };
+    const watermarkOf = Effect.fnUntraced(function* (sha: string) {
+      const onChain = yield* ordinalOf(sha);
+      if (onChain !== null) return onChain;
+      // Deployed from a release branch or a PR branch: what it shares with the default branch.
+      const base = yield* github.mergeBase({ repository, sha, headSha: head.headSha });
+      return base === null ? null : yield* ordinalOf(base);
+    });
     const previous = row.production;
+    const headMoved = reset || cursor?.headSha !== head.headSha;
+    const productionOf = Effect.fnUntraced(function* (signal: ProductionSignal, stale: boolean) {
+      if (signal.source === "default-branch") return { signal, watermark: "head" as const, stale };
+      // Reused only while nothing could move it: a reset renumbers, and a sha off the default
+      // branch can meet it somewhere new once the head moves.
+      const unchanged =
+        !headMoved &&
+        previous !== null &&
+        "sha" in previous.signal &&
+        previous.signal.sha === signal.sha;
+      return {
+        signal,
+        watermark: unchanged ? previous.watermark : yield* watermarkOf(signal.sha),
+        stale,
+      };
+    });
     const choice = chooseProductionSource({
       ...(yield* github.readProduction({
         repository,
@@ -451,25 +452,31 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       })),
       previous: previous?.signal ?? null,
     });
-    let production: ProductionState;
-    if (choice === "keep-previous") {
-      production = { ...previous!, stale: true };
-    } else if (choice.source === "default-branch") {
-      production = { signal: choice, watermark: "head", stale: false };
-    } else if (
-      !reset &&
-      previous !== null &&
-      previous.signal.source === choice.source &&
-      "sha" in previous.signal &&
-      previous.signal.sha === choice.sha
-    ) {
-      production = { signal: choice, watermark: previous.watermark, stale: false };
-    } else {
-      const watermark = yield* watermarkOf(repository, choice.sha, head.headSha);
-      production = { signal: choice, watermark, stale: false };
+    const production =
+      choice === "keep-previous"
+        ? yield* productionOf(previous!.signal, true)
+        : yield* productionOf(choice, false);
+
+    // A first sync with nothing in the window still records the head, or every later sync
+    // would read the history again.
+    if (!reset && cursor !== null && landings.length === 0) {
+      yield* store.setProduction(key, production);
+      return { backlog: false };
     }
-    yield* store.setProduction(key, production);
-    return { backlog };
+    const tail = reset ? null : yield* store.tail(key);
+    const { units, deferred } = groupChangeUnits({ repository, tail, landings });
+    const unitKeyOf = unitKeyByOrdinal(units);
+    yield* store.applySync({
+      key,
+      defaultBranch: head.defaultBranch,
+      cursor: { headSha: head.headSha, headOrdinal: base + fresh.length },
+      reset,
+      commits: landings.map((landing) => ({ landing, unitKey: unitKeyOf(landing.ordinal) })),
+      units,
+      production,
+      now,
+    });
+    return { backlog: deferred.length > 0 };
   });
 
   /** Up to five threads per entry: linked to the entry's pull request, or on its branch. */

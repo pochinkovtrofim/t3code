@@ -241,6 +241,8 @@ export interface SyncWrite {
    * shown until the new one lands.
    */
   readonly units: ReadonlyArray<ChangeUnit>;
+  /** Written with the history its watermark numbers, so the two never disagree. */
+  readonly production: ProductionState;
   readonly now: number;
 }
 
@@ -662,6 +664,7 @@ const make = Effect.gen(function* () {
           default_branch = ${write.defaultBranch},
           head_sha = ${write.cursor.headSha},
           head_ordinal = ${write.cursor.headOrdinal},
+          production_json = ${productionJson.encode(write.production)},
           updated_at = ${write.now}
         WHERE repository_key = ${write.key}
       `;

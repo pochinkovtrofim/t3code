@@ -81,6 +81,7 @@ const syncWrite = (
       unitKey: unitOf.get(String(landing.ordinal)) ?? null,
     })),
     units,
+    production: { signal: { source: "default-branch" }, watermark: "head", stale: false },
     now: T0,
   };
 };
@@ -143,6 +144,7 @@ layer("ChangelogStore", (it) => {
       // Ordinal 1 already belongs to "a", so the second commit row violates the ordinal index.
       const failing: ChangelogStore.SyncWrite = {
         ...clash,
+        production: { signal: { source: "tag", tag: "v2", sha: "b" }, watermark: 2, stale: false },
         commits: [
           ...clash.commits,
           { landing: { ...clash.commits[0]!.landing, sha: "c", ordinal: 1 }, unitKey: null },
@@ -153,6 +155,7 @@ layer("ChangelogStore", (it) => {
 
       const row = Option.getOrThrow(yield* store.getRepository(key));
       assert.deepEqual(row.cursor, { headSha: "a", headOrdinal: 1 });
+      assert.deepEqual(row.production?.signal, { source: "default-branch" });
       assert.deepEqual(yield* pageKeys(store), [["push:a", "pending"]]);
       assert.equal(yield* store.ordinalOf(key, "b"), null);
     }),
