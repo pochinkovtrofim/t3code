@@ -160,6 +160,7 @@ function selectOpenCodeRuntimeTextGeneration(
         v1: v1.generateReviewGuide(input),
         v2: v2.generateReviewGuide(input),
       }),
+    // fork: project changelog
     generateChangelogSummaries: (input) =>
       byOpenCodeRuntime(probe.get, {
         v1: generateChangelogSummariesWith(v1, input),

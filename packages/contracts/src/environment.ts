@@ -155,7 +155,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Server answers projectThreads.ensure and runs project threads. */
   projectThreads: Schema.optionalKey(Schema.Boolean),
   /** Server answers projectChangelog.read and projectChangelog.watch. */
-  projectChangelog: Schema.optionalKey(Schema.Boolean),
+  projectChangelog: Schema.optionalKey(Schema.Boolean), // fork: project changelog
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

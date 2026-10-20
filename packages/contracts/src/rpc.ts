@@ -377,6 +377,7 @@ import {
   ProjectThreadEnsureInput,
   ProjectThreadEnsureResult,
 } from "./projectThread.ts";
+// fork: project changelog
 import {
   ProjectChangelogError,
   ProjectChangelogPage,
@@ -398,6 +399,7 @@ export const WS_METHODS = {
   projectsEnsureScratch: "projects.ensureScratch",
   projectsCreateNew: "projects.createNew",
   projectThreadsEnsure: "projectThreads.ensure",
+  // fork: project changelog
   projectChangelogRead: "projectChangelog.read",
   projectChangelogWatch: "projectChangelog.watch",
 
@@ -1264,6 +1266,7 @@ const WsProjectThreadsEnsureRpc = Rpc.make(WS_METHODS.projectThreadsEnsure, {
   ]),
 });
 
+// fork: project changelog
 const WsProjectChangelogReadRpc = Rpc.make(WS_METHODS.projectChangelogRead, {
   payload: ProjectChangelogReadInput,
   success: ProjectChangelogPage,
@@ -2013,6 +2016,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsEnsureScratchRpc,
   WsProjectsCreateNewRpc,
   WsProjectThreadsEnsureRpc,
+  // fork: project changelog
   WsProjectChangelogReadRpc,
   WsProjectChangelogWatchRpc,
   WsProjectsWriteFileRpc,

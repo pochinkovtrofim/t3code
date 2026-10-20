@@ -115,7 +115,7 @@ import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
 import * as ProjectThreadService from "./orchestration-v2/ProjectThreadService.ts";
-import * as ProjectChangelog from "./projectChangelog/ProjectChangelog.ts";
+import * as ProjectChangelog from "./projectChangelog/ProjectChangelog.ts"; // fork: project changelog
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
@@ -1219,7 +1219,7 @@ export const layerWsRpc = (
       };
       const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
       const projectThreads = yield* ProjectThreadService.ProjectThreadService;
-      const projectChangelog = yield* ProjectChangelog.ProjectChangelog;
+      const projectChangelog = yield* ProjectChangelog.ProjectChangelog; // fork: project changelog
       const commandOutputHub = yield* CommandOutputHub.CommandOutputHub;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
@@ -2607,6 +2607,7 @@ export const layerWsRpc = (
                   : new OrchestrationDispatchCommandError({ message: cause.message, cause }),
               ),
             ),
+        // fork: project changelog
         [WS_METHODS.projectChangelogRead]: (input) => projectChangelog.read(input),
         [WS_METHODS.projectChangelogWatch]: (input) => projectChangelog.watch(input),
         [WS_METHODS.projectCloneCancel]: (input) =>
@@ -3145,7 +3146,7 @@ export const layer = Layer.unwrap(
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
-    const projectChangelog = yield* ProjectChangelog.ProjectChangelog;
+    const projectChangelog = yield* ProjectChangelog.ProjectChangelog; // fork: project changelog
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3237,6 +3238,7 @@ export const layer = Layer.unwrap(
                   reviewGuides,
                 ),
               ),
+              // fork: project changelog
               Layer.provide(Layer.succeed(ProjectChangelog.ProjectChangelog, projectChangelog)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(

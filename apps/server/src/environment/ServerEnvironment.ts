@@ -267,7 +267,7 @@ export const make = Effect.gen(function* () {
       ...(desktopAppUpdate ? { desktopAppUpdate: true } : {}),
       serverBrowser: true,
       projectThreads: true,
-      projectChangelog: true,
+      projectChangelog: true, // fork: project changelog
     },
   };
 

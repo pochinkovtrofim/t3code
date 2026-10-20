@@ -16,6 +16,7 @@ import * as Schema from "effect/Schema";
 
 import { createMuseSdkHost, createMuseSdkHostEffect, type MuseSdkHost } from "./sdk.ts";
 import { museModelCapabilities, resolveMuseReasoningEffort } from "./modelCatalog.ts";
+// fork: project changelog
 import {
   buildChangelogSummariesPrompt,
   sanitizeChangelogSummaries,
@@ -346,6 +347,7 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
   });
   const generateReviewGuide: ProviderTextGeneration["generateReviewGuide"] = () =>
     Effect.fail(investigationUnsupported("generateReviewGuide", "Muse Code"));
+  // fork: project changelog
   const generateChangelogSummaries: ProviderTextGeneration["generateChangelogSummaries"] =
     Effect.fn("MuseTextGeneration.generateChangelogSummaries")(function* (input) {
       const generated = yield* runMuseJson({
@@ -361,6 +363,6 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
-    generateChangelogSummaries,
+    generateChangelogSummaries, // fork: project changelog
   } satisfies ProviderTextGeneration;
 });
