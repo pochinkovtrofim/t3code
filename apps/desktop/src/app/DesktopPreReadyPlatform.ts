@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 
 import * as Electron from "electron";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { resolveDesktopForkIdentity } from "@t3tools/shared/desktopFork";
 
 import * as DesktopEarlyElectronStartup from "./DesktopEarlyElectronStartup.ts";
 import { resolveDesktopAppBranding, resolveDesktopSafeStorageName } from "./DesktopEnvironment.ts";
@@ -33,13 +34,22 @@ function readCommandLineSwitchValue(
 
 export const resolveEarlyLinuxElectronOptionsFromProcess = (
   homeDirectory: string,
-): DesktopEarlyElectronStartup.EarlyLinuxElectronOptions =>
-  DesktopEarlyElectronStartup.resolveEarlyLinuxElectronOptions({
+): DesktopEarlyElectronStartup.EarlyLinuxElectronOptions => {
+  const options = DesktopEarlyElectronStartup.resolveEarlyLinuxElectronOptions({
     env: process.env,
     homeDirectory,
     joinPath: NodePath.posix.join,
     readFileString: (path) => NodeFS.readFileSync(path, "utf8"),
   });
+  const fork = resolveDesktopForkIdentity(Electron.app.getVersion());
+  return fork === undefined
+    ? options
+    : {
+        ...options,
+        linuxWmClass: fork.linuxWmClass,
+        linuxDesktopEntryName: fork.linuxDesktopEntryName,
+      };
+};
 
 export class DesktopPreReadyElectronOptions extends Context.Service<
   DesktopPreReadyElectronOptions,
@@ -80,54 +90,56 @@ export const make = Effect.gen(function* () {
       });
       // The portal also requires a valid desktop entry. An AppImage update may
       // have removed the executable referenced by the previous launch's entry.
-      try {
-        const applicationsDir = NodePath.posix.join(
-          process.env.XDG_DATA_HOME?.trim() ||
-            NodePath.posix.join(homeDirectory, ".local", "share"),
-          "applications",
-        );
-        NodeFS.mkdirSync(applicationsDir, { recursive: true });
-        const iconPath = Electron.app.isPackaged
-          ? NodePath.posix.join(
-              applicationsDir,
-              "..",
-              "icons",
-              `${linux.linuxDesktopEntryName}.png`,
-            )
-          : undefined;
-        if (iconPath !== undefined) {
-          try {
-            // Electron's copyFile extracts ASAR entries to temporary files it never removes.
-            const icon = NodeFS.readFileSync(
-              NodePath.posix.join(
-                Electron.app.getAppPath(),
-                "apps/desktop/prod-resources/icon.png",
-              ),
-            );
-            let current: Buffer | null = null;
+      // A fork's installer writes its entry, without the upstream URL scheme.
+      if (resolveDesktopForkIdentity(Electron.app.getVersion()) === undefined)
+        try {
+          const applicationsDir = NodePath.posix.join(
+            process.env.XDG_DATA_HOME?.trim() ||
+              NodePath.posix.join(homeDirectory, ".local", "share"),
+            "applications",
+          );
+          NodeFS.mkdirSync(applicationsDir, { recursive: true });
+          const iconPath = Electron.app.isPackaged
+            ? NodePath.posix.join(
+                applicationsDir,
+                "..",
+                "icons",
+                `${linux.linuxDesktopEntryName}.png`,
+              )
+            : undefined;
+          if (iconPath !== undefined) {
             try {
-              current = NodeFS.readFileSync(iconPath);
+              // Electron's copyFile extracts ASAR entries to temporary files it never removes.
+              const icon = NodeFS.readFileSync(
+                NodePath.posix.join(
+                  Electron.app.getAppPath(),
+                  "apps/desktop/prod-resources/icon.png",
+                ),
+              );
+              let current: Buffer | null = null;
+              try {
+                current = NodeFS.readFileSync(iconPath);
+              } catch {}
+              if (current === null || !current.equals(icon)) {
+                NodeFS.mkdirSync(NodePath.posix.dirname(iconPath), { recursive: true });
+                NodeFS.writeFileSync(iconPath, icon, { mode: 0o600 });
+              }
             } catch {}
-            if (current === null || !current.equals(icon)) {
-              NodeFS.mkdirSync(NodePath.posix.dirname(iconPath), { recursive: true });
-              NodeFS.writeFileSync(iconPath, icon, { mode: 0o600 });
-            }
-          } catch {}
-        }
-        NodeFS.writeFileSync(
-          NodePath.posix.join(applicationsDir, linux.linuxDesktopEntryName),
-          renderUrlHandlerDesktopEntry({
-            displayName: resolveDesktopAppBranding({
-              isDevelopment: linux.isDevelopment,
-              appVersion: Electron.app.getVersion(),
-            }).displayName,
-            execTarget: process.env.APPIMAGE?.trim() || process.execPath,
-            scheme: ElectronProtocol.getDesktopScheme(linux.isDevelopment),
-            ...(iconPath === undefined ? {} : { iconPath }),
-          }),
-          "utf8",
-        );
-      } catch {}
+          }
+          NodeFS.writeFileSync(
+            NodePath.posix.join(applicationsDir, linux.linuxDesktopEntryName),
+            renderUrlHandlerDesktopEntry({
+              displayName: resolveDesktopAppBranding({
+                isDevelopment: linux.isDevelopment,
+                appVersion: Electron.app.getVersion(),
+              }).displayName,
+              execTarget: process.env.APPIMAGE?.trim() || process.execPath,
+              scheme: ElectronProtocol.getDesktopScheme(linux.isDevelopment),
+              ...(iconPath === undefined ? {} : { iconPath }),
+            }),
+            "utf8",
+          );
+        } catch {}
       // Chromium caches its portal registration during startup. Set the identity
       // before any asynchronous work can initialize it with Electron's default.
       Electron.app.setDesktopName(linux.linuxDesktopEntryName);

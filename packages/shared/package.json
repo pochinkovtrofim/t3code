@@ -351,6 +351,10 @@
       "types": "./src/devHome.ts",
       "import": "./src/devHome.ts"
     },
+    "./desktopFork": {
+      "types": "./src/desktopFork.ts",
+      "import": "./src/desktopFork.ts"
+    },
     "./devProxy": {
       "types": "./src/devProxy.ts",
       "import": "./src/devProxy.ts"

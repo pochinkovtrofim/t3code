@@ -6,6 +6,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import { resolveDesktopForkIdentity } from "@t3tools/shared/desktopFork";
 
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import * as DesktopAssets from "./DesktopAssets.ts";
@@ -292,7 +293,9 @@ export const make = Effect.gen(function* () {
   );
 
   const register = Effect.gen(function* () {
-    if (environment.platform !== "linux") {
+    // A fork must not take t3code:// links from the upstream install, and its
+    // installer owns the fork's desktop entry.
+    if (environment.platform !== "linux" || resolveDesktopForkIdentity(environment.appVersion)) {
       return;
     }
     yield* writeDesktopEntry;

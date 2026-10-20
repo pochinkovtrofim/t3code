@@ -18,6 +18,10 @@ import * as Electron from "electron";
 
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import {
+  resolveDesktopForkEnvironment,
+  resolveDesktopForkIdentity,
+} from "@t3tools/shared/desktopFork";
 import type { RemoteT3RunnerOptions } from "@t3tools/ssh/tunnel";
 import serverPackageJson from "../../server/package.json" with { type: "json" };
 
@@ -85,6 +89,10 @@ if (process.argv.includes("--version")) {
     if (!(error instanceof Error) || !("code" in error) || error.code !== "EPIPE") throw error;
   }
   Electron.app.exit(0);
+}
+
+if (resolveDesktopForkIdentity(Electron.app.getVersion()) !== undefined) {
+  Object.assign(process.env, resolveDesktopForkEnvironment(NodeOS.homedir()));
 }
 
 const layerDesktopEnvironment = Layer.unwrap(
