@@ -486,6 +486,20 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["new worktrees start remote origin latest fetched branch local"],
   },
   {
+    id: "project-threads",
+    title: "Project threads",
+    to: "/settings/general",
+    scope: "project-defaults",
+    searchTerms: ["project thread manager chat launch steer orchestrate threads read-only"],
+  },
+  {
+    id: "project-thread-instructions",
+    title: "Project thread instructions",
+    to: "/settings/general",
+    scope: "project-defaults",
+    searchTerms: ["project thread manager prompt guidance read-only custom"],
+  },
+  {
     id: "add-project-starts-in",
     title: "Add project starts in",
     to: "/settings/general",

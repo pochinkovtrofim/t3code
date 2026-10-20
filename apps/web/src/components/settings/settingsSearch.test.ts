@@ -62,6 +62,15 @@ describe("searchSettings", () => {
     expect(searchSettings(query).map((item) => item.id)).toContain("send-shortcut");
   });
 
+  it.each([
+    ["project thread", "project-threads"],
+    ["manager", "project-threads"],
+    ["project thread instructions", "project-thread-instructions"],
+    ["manager prompt", "project-thread-instructions"],
+  ])("finds project thread settings for %s", (query, id) => {
+    expect(searchSettings(query).map((item) => item.id)).toContain(id);
+  });
+
   it("matches titles, sections, and remembered setting details", () => {
     expect(searchSettings("word", ITEMS).map((item) => item.id)).toEqual(["word-wrap"]);
     expect(searchSettings("network", ITEMS).map((item) => item.id)).toEqual(["network-access"]);
