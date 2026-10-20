@@ -92,6 +92,8 @@ function problemText(
       return `GitHub's rate limit was reached. ${retrySentence(problem.retryAt, clock)}`;
     case "unreachable":
       return `Could not reach GitHub. ${retrySentence(problem.retryAt, clock)}`;
+    case "internal":
+      return `T3 Code hit an error while updating the changelog. The server log has the details. ${retrySentence(problem.retryAt, clock)}`;
   }
 }
 

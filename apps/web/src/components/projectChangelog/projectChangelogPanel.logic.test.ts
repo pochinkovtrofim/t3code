@@ -179,6 +179,23 @@ describe("describeChangelogPage", () => {
     );
   });
 
+  it("points a sync that failed inside T3 Code at the server log", () => {
+    const sync = describeChangelogPage(
+      page({
+        sync: {
+          lastSyncedAt: null,
+          problem: { reason: "internal", retryAt: null },
+          syncing: false,
+        },
+      }),
+      clock,
+    ).sync;
+    expect(sync).toEqual({
+      tone: "warning",
+      text: "T3 Code hit an error while updating the changelog. The server log has the details. T3 Code tries again automatically.",
+    });
+  });
+
   it("describes production from a deployment, a release or a tag", () => {
     expect(describeChangelogPage(page(), clock).production).toEqual({
       tone: "muted",
