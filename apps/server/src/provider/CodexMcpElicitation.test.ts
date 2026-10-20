@@ -3,7 +3,13 @@ import * as NodeAssert from "node:assert/strict";
 import { describe, it } from "vite-plus/test";
 import type * as EffectCodexSchema from "effect-codex-app-server/schema";
 
-import { describeMcpElicitation, toMcpElicitationResponse } from "./CodexMcpElicitation.ts";
+import type { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
+
+import {
+  describeMcpElicitation,
+  isAutoAcceptedT3ToolCallElicitation,
+  toMcpElicitationResponse,
+} from "./CodexMcpElicitation.ts";
 
 describe("Codex MCP elicitation approvals", () => {
   const request = {
@@ -204,5 +210,61 @@ describe("Codex MCP elicitation approvals", () => {
       { decision: "decline", label: "Decline" },
       { decision: "accept", label: "Approve" },
     ]);
+  });
+});
+
+describe("T3 tool calls in a read-only orchestrating turn", () => {
+  const orchestrating: ProviderAdapterV2RuntimePolicy = {
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    cwd: "/repo",
+    approvalPolicy: "never",
+    sandboxPolicy: { type: "readOnly", networkAccess: false },
+    allowT3Orchestration: true,
+  };
+  const t3ToolCall = {
+    mode: "form",
+    message: 'Allow the t3-code MCP server to run tool "t3_thread_launch"?',
+    serverName: "t3-code",
+    threadId: "provider-thread-1",
+    turnId: "turn-1",
+    _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"] },
+    requestedSchema: { type: "object", properties: {} },
+  } satisfies EffectCodexSchema.McpServerElicitationRequestParams;
+
+  it("accepts T3's own tool calls without asking the user", () => {
+    NodeAssert.equal(isAutoAcceptedT3ToolCallElicitation(orchestrating, t3ToolCall), true);
+    NodeAssert.deepStrictEqual(toMcpElicitationResponse(t3ToolCall, "accept"), {
+      action: "accept",
+      content: {},
+    });
+  });
+
+  it("still asks the user for every other request", () => {
+    const { allowT3Orchestration: _, ...ordinary } = orchestrating;
+    const { _meta: __, ...withoutMetadata } = t3ToolCall;
+    for (const [runtimePolicy, payload] of [
+      [ordinary, t3ToolCall],
+      [orchestrating, { ...t3ToolCall, serverName: "computer-use" }],
+      [orchestrating, { ...t3ToolCall, _meta: { codex_approval_kind: "ordinary_form" } }],
+      [orchestrating, withoutMetadata],
+      [
+        orchestrating,
+        {
+          mode: "url",
+          message: "Finish signing in to continue.",
+          serverName: "t3-code",
+          threadId: "provider-thread-1",
+          turnId: "turn-1",
+          _meta: { codex_approval_kind: "mcp_tool_call" },
+          elicitationId: "sign-in-1",
+          url: "https://example.com/authorize",
+        },
+      ],
+    ] satisfies ReadonlyArray<
+      readonly [ProviderAdapterV2RuntimePolicy, EffectCodexSchema.McpServerElicitationRequestParams]
+    >) {
+      NodeAssert.equal(isAutoAcceptedT3ToolCallElicitation(runtimePolicy, payload), false);
+    }
   });
 });

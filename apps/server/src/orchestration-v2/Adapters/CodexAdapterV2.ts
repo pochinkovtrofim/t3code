@@ -102,7 +102,9 @@ import {
   buildCodexDeveloperInstructions,
 } from "../../provider/CodexDeveloperInstructions.ts";
 import {
+  CODEX_T3_MCP_SERVER_NAME,
   describeMcpElicitation,
+  isAutoAcceptedT3ToolCallElicitation,
   toMcpElicitationResponse,
 } from "../../provider/CodexMcpElicitation.ts";
 import {
@@ -1350,7 +1352,7 @@ function codexThreadRuntimeParams(input: {
         ? {}
         : {
             // Override only T3's server so launch-argument MCP servers survive.
-            "mcp_servers.t3-code": {
+            [`mcp_servers.${CODEX_T3_MCP_SERVER_NAME}`]: {
               url: mcpSession.endpoint,
               tool_timeout_sec: CODEX_T3_MCP_TOOL_TIMEOUT_SEC,
               http_headers: {
@@ -5369,6 +5371,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return {
                 action: "decline",
               } satisfies CodexSchema.McpServerElicitationRequestResponse;
+            }
+            if (isAutoAcceptedT3ToolCallElicitation(context.input.runtimePolicy, payload)) {
+              yield* Effect.logInfo("Accepted a T3 tool call for a read-only orchestrating turn.", {
+                threadId: context.projectionThreadId,
+                prompt: payload.message,
+              });
+              return toMcpElicitationResponse(payload, "accept");
             }
 
             const nativeRequestId =

@@ -1431,6 +1431,17 @@ export const CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   "mcp__t3-code__html_render",
 ];
 
+// A read-only turn that orchestrates T3 (a project thread) also needs the
+// tools that start, steer and stop other threads; it still cannot touch files.
+export const CLAUDE_ORCHESTRATING_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
+  ...CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS,
+  "mcp__t3-code__t3_thread_launch",
+  "mcp__t3-code__t3_thread_send",
+  "mcp__t3-code__t3_thread_read",
+  "mcp__t3-code__t3_thread_interrupt",
+  "mcp__t3-code__t3_thread_configure",
+];
+
 // Claude Code aborts an HTTP MCP call after 60 s ("The operation timed out.")
 // unless the server config sets `timeout`. T3's wait tools (t3_thread_wait,
 // delegate_task mode=wait) legitimately block for up to an hour
@@ -1447,6 +1458,7 @@ export const CLAUDE_T3_MCP_TOOL_TIMEOUT_MS = 65 * 60 * 1_000;
 export function claudeMcpQueryOverrides(input: {
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
   readonly readOnlySandbox: boolean;
+  readonly allowT3Orchestration?: boolean;
   readonly allowedTools?: ReadonlyArray<string>;
 }): {
   readonly allowedTools?: ReadonlyArray<string>;
@@ -1456,9 +1468,11 @@ export function claudeMcpQueryOverrides(input: {
   if (session === undefined) {
     return input.allowedTools === undefined ? {} : { allowedTools: input.allowedTools };
   }
-  const mcpAllowedTools = input.readOnlySandbox
-    ? CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS
-    : [CLAUDE_T3_MCP_TOOL_WILDCARD];
+  const mcpAllowedTools = !input.readOnlySandbox
+    ? [CLAUDE_T3_MCP_TOOL_WILDCARD]
+    : input.allowT3Orchestration === true
+      ? CLAUDE_ORCHESTRATING_READ_ONLY_T3_MCP_ALLOWED_TOOLS
+      : CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS;
   return {
     allowedTools: Array.from(new Set([...(input.allowedTools ?? []), ...mcpAllowedTools])),
     mcpServers: {
@@ -9038,6 +9052,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             mcpSession: yield* mcpSessions.read(turnInput.threadId),
             readOnlySandbox:
               sandboxPolicyKindForClaudeRuntimePolicy(turnInput.runtimePolicy) === "readOnly",
+            allowT3Orchestration: turnInput.runtimePolicy.allowT3Orchestration === true,
             ...(queryPolicy.allowedTools === undefined
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),

@@ -1,4 +1,5 @@
 import type { ProviderApprovalDecision, ProviderApprovalOption } from "@t3tools/contracts";
+import type { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Schema from "effect/Schema";
 import type * as EffectCodexSchema from "effect-codex-app-server/schema";
 
@@ -217,4 +218,29 @@ export function toMcpElicitationResponse(
     ...(persist ? { _meta: { persist } } : {}),
     ...(form ? { content } : {}),
   };
+}
+
+/** The name T3 registers its own MCP server under in every Codex thread. */
+export const CODEX_T3_MCP_SERVER_NAME = "t3-code";
+
+const isMcpToolCallApprovalMetadata = Schema.is(
+  Schema.Struct({ codex_approval_kind: Schema.Literal("mcp_tool_call") }),
+);
+
+/**
+ * Codex asks before a tool call that is not marked read-only whenever the turn
+ * is sandboxed. A turn allowed to orchestrate T3 exists to launch and steer
+ * threads through T3's own server, so those asks are answered here; asks from
+ * any other server, and every other kind of elicitation, still reach the user.
+ */
+export function isAutoAcceptedT3ToolCallElicitation(
+  runtimePolicy: ProviderAdapterV2RuntimePolicy,
+  payload: EffectCodexSchema.McpServerElicitationRequestParams,
+): boolean {
+  return (
+    runtimePolicy.allowT3Orchestration === true &&
+    payload.serverName === CODEX_T3_MCP_SERVER_NAME &&
+    payload.mode !== "url" &&
+    isMcpToolCallApprovalMetadata(payload._meta)
+  );
 }

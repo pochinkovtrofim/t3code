@@ -52,6 +52,11 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   approvalPolicy: Schema.optional(Schema.Unknown),
   sandboxPolicy: Schema.optional(Schema.Unknown),
   reasoningEffort: Schema.optional(Schema.String),
+  /**
+   * A read-only turn may still start and steer other T3 threads through the
+   * `t3-code` MCP server. It never widens the turn's own file or shell access.
+   */
+  allowT3Orchestration: Schema.optional(Schema.Boolean),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 

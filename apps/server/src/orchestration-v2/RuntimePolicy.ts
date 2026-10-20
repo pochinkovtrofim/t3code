@@ -5,6 +5,11 @@ import {
   ProviderInstanceId,
   type RuntimeMode,
 } from "@t3tools/contracts";
+import {
+  isProjectThreadId,
+  projectThreadEnforcement,
+  resolveProjectThread,
+} from "@t3tools/shared/projectThread";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -12,6 +17,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectStore from "./ProjectStore.ts";
 
@@ -70,15 +76,26 @@ function providerRuntimeMode(
     : "approval-required";
 }
 
+// The thread's stored runtime mode stays as configured: MCP caps the threads a
+// project thread launches at that stored mode, so its workers keep full power.
+const PROJECT_THREAD_READ_ONLY_POLICY = {
+  approvalPolicy: "never",
+  sandboxPolicy: { type: "readOnly", access: { type: "fullAccess" }, networkAccess: false },
+  allowT3Orchestration: true,
+} as const;
+
 export const layerFromProjectStore: Layer.Layer<
   RuntimePolicyV2,
   never,
-  ProjectStore.ProjectStoreV2 | ProviderInstanceRegistry.ProviderInstanceRegistry
+  | ProjectStore.ProjectStoreV2
+  | ProviderInstanceRegistry.ProviderInstanceRegistry
+  | ServerSettings.ServerSettingsService
 > = Layer.effect(
   RuntimePolicyV2,
   Effect.gen(function* () {
     const projects = yield* ProjectStore.ProjectStoreV2;
     const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
     return RuntimePolicyV2.of({
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
         const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
@@ -111,10 +128,30 @@ export const layerFromProjectStore: Layer.Layer<
               }),
             ),
           ));
+        const projectThread = isProjectThreadId(input.thread.id)
+          ? resolveProjectThread(
+              yield* serverSettings.getSettings.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new RuntimePolicyResolveError({
+                      projectId: input.thread.projectId,
+                      providerInstanceId: input.modelSelection.instanceId,
+                      cause,
+                    }),
+                ),
+              ),
+              input.thread,
+            )
+          : null;
+        const readOnlyProjectThread =
+          projectThread !== null &&
+          instance !== undefined &&
+          projectThreadEnforcement(instance.driverKind) === "read-only";
         return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: providerRuntimeMode(input.thread.runtimeMode, supportedRuntimeModes),
           interactionMode: input.thread.interactionMode,
           cwd,
+          ...(readOnlyProjectThread ? PROJECT_THREAD_READ_ONLY_POLICY : {}),
         });
       }),
     });

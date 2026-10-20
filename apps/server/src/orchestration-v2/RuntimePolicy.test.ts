@@ -3,11 +3,13 @@ import {
   type ModelSelection,
   type OrchestrationV2AppThread,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   type RuntimeMode,
   type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
+import { makeProjectThreadId } from "@t3tools/shared/projectThread";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -15,7 +17,9 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import type { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 
@@ -30,8 +34,9 @@ function makeThread(input: {
   readonly now: DateTime.Utc;
   readonly worktreePath: string | null;
   readonly runtimeMode?: RuntimeMode;
+  readonly id?: ThreadId;
 }): OrchestrationV2AppThread {
-  const threadId = ThreadId.make("thread:runtime-policy");
+  const threadId = input.id ?? ThreadId.make("thread:runtime-policy");
   return {
     createdBy: "user",
     creationSource: "web",
@@ -67,6 +72,7 @@ const supportedRuntimeModesByInstance = new Map<ProviderInstanceId, ReadonlyArra
 ]);
 const providerInstanceFor = (instanceId: ProviderInstanceId) =>
   ({
+    driverKind: ProviderDriverKind.make(instanceId),
     snapshot: {
       getSnapshot: Effect.succeed({
         supportedRuntimeModes: supportedRuntimeModesByInstance.get(instanceId),
@@ -74,38 +80,41 @@ const providerInstanceFor = (instanceId: ProviderInstanceId) =>
     },
   }) as ProviderInstance;
 
-const layerTest = RuntimePolicy.layerFromProjectStore.pipe(
-  Layer.provide(
-    Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
-      getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
-      listInstances: Effect.succeed([]),
-      listUnavailable: Effect.succeed([]),
-      streamChanges: Stream.empty,
-      subscribeChanges: Effect.never,
-    }),
-  ),
-  Layer.provide(
-    Layer.mock(ProjectStore.ProjectStoreV2)({
-      get: () =>
-        Effect.succeed(
-          Option.some({
-            projectId,
-            title: "Project",
-            workspaceRoot: "/project-root",
-            defaultModelSelection: null,
-            defaultThreadEnvMode: null,
-            autoPull: false,
-            faviconPath: null,
-            projectIcon: null,
-            scripts: [],
-            createdAt: "2026-06-21T00:00:00.000Z",
-            updatedAt: "2026-06-21T00:00:00.000Z",
-            deletedAt: null,
-          }),
-        ),
-    }),
-  ),
-);
+const makeLayerTest = (settings?: Parameters<typeof ServerSettings.layerTest>[0]) =>
+  RuntimePolicy.layerFromProjectStore.pipe(
+    Layer.provide(ServerSettings.layerTest(settings)),
+    Layer.provide(
+      Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+        getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
+        listInstances: Effect.succeed([]),
+        listUnavailable: Effect.succeed([]),
+        streamChanges: Stream.empty,
+        subscribeChanges: Effect.never,
+      }),
+    ),
+    Layer.provide(
+      Layer.mock(ProjectStore.ProjectStoreV2)({
+        get: () =>
+          Effect.succeed(
+            Option.some({
+              projectId,
+              title: "Project",
+              workspaceRoot: "/project-root",
+              defaultModelSelection: null,
+              defaultThreadEnvMode: null,
+              autoPull: false,
+              faviconPath: null,
+              projectIcon: null,
+              scripts: [],
+              createdAt: "2026-06-21T00:00:00.000Z",
+              updatedAt: "2026-06-21T00:00:00.000Z",
+              deletedAt: null,
+            }),
+          ),
+      }),
+    ),
+  );
+const layerTest = makeLayerTest();
 
 it.layer(layerTest)("RuntimePolicyV2", (it) => {
   it.effect("uses the project root for local-checkout threads", () =>
@@ -151,3 +160,77 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
     }),
   );
 });
+
+const projectThreadId = makeProjectThreadId("runtime-policy");
+const PROJECT_THREAD_READ_ONLY = {
+  approvalPolicy: "never",
+  sandboxPolicy: { type: "readOnly", access: { type: "fullAccess" }, networkAccess: false },
+  allowT3Orchestration: true,
+};
+const orchestrationFields = (policy: ProviderAdapterV2RuntimePolicy) => ({
+  approvalPolicy: policy.approvalPolicy,
+  sandboxPolicy: policy.sandboxPolicy,
+  allowT3Orchestration: policy.allowT3Orchestration,
+});
+
+it.layer(layerTest)("RuntimePolicyV2 for project threads", (it) => {
+  it.effect("runs the project thread's own turns read-only where the provider enforces it", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      for (const instanceId of ["codex", "claudeAgent"]) {
+        const resolved = yield* policy.resolve({
+          thread: makeThread({ now, worktreePath: null, id: projectThreadId }),
+          modelSelection: { instanceId: ProviderInstanceId.make(instanceId), model: "test-model" },
+        });
+        assert.deepEqual(orchestrationFields(resolved), PROJECT_THREAD_READ_ONLY, instanceId);
+        // The stored mode stays, so the threads it launches keep their full power.
+        assert.equal(resolved.runtimeMode, "full-access", instanceId);
+        assert.equal(resolved.cwd, "/project-root", instanceId);
+      }
+    }),
+  );
+
+  it.effect("leaves prompt-only providers and ordinary threads on their normal policy", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const unrestricted = {
+        approvalPolicy: undefined,
+        sandboxPolicy: undefined,
+        allowT3Orchestration: undefined,
+      };
+      for (const instanceId of ["cursor", "grok", "opencode"]) {
+        const resolved = yield* policy.resolve({
+          thread: makeThread({ now, worktreePath: null, id: projectThreadId }),
+          modelSelection: { instanceId: ProviderInstanceId.make(instanceId), model: "test-model" },
+        });
+        assert.deepEqual(orchestrationFields(resolved), unrestricted, instanceId);
+      }
+      const ordinary = yield* policy.resolve({
+        thread: makeThread({ now, worktreePath: null }),
+        modelSelection,
+      });
+      assert.deepEqual(orchestrationFields(ordinary), unrestricted);
+    }),
+  );
+});
+
+it.effect("treats a project thread as ordinary once its project turns the feature off", () =>
+  Effect.gen(function* () {
+    const policy = yield* RuntimePolicy.RuntimePolicyV2;
+    const now = yield* DateTime.now;
+    const resolved = yield* policy.resolve({
+      thread: makeThread({ now, worktreePath: null, id: projectThreadId }),
+      modelSelection,
+    });
+    assert.isUndefined(resolved.sandboxPolicy);
+    assert.isUndefined(resolved.allowT3Orchestration);
+  }).pipe(
+    Effect.provide(
+      makeLayerTest({
+        projectSettingsOverrides: { [projectId]: { projectThreadsEnabled: false } },
+      }),
+    ),
+  ),
+);
