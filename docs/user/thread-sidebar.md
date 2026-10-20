@@ -49,7 +49,9 @@ On web and desktop, the active list groups threads under a header for each proje
 threads without a project gather under **No project** at the end. Each project has one
 project thread, a single ongoing conversation about the project as a whole. Click a
 project's header to open its project thread. The first click creates the thread, or restores it
-if you archived it. The header shows the project thread's status.
+if you archived it. The header shows the project thread's status. You can also open it from
+the new-thread screen or the command palette; see
+[Open a project thread](./project-threads.md#open-a-project-thread).
 
 Click the chevron to collapse or expand a group. A collapsed group still shows the thread you
 are viewing, and its header counts the hidden threads and shows the most urgent status among
