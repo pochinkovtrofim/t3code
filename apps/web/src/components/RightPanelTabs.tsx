@@ -36,6 +36,7 @@ import {
   Plus,
   TerminalSquare,
 } from "lucide-react";
+import { ScrollTextIcon } from "lucide-react"; // fork: project changelog
 import { Volume2, VolumeOff } from "lucide";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
@@ -567,6 +568,8 @@ function surfaceTitle(
       return `#${surface.number}`;
     case "pull-requests":
       return "Pull requests";
+    case "changelog": // fork: project changelog
+      return "Changelog";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -657,6 +660,8 @@ function SurfaceIcon({
       );
     case "pull-requests":
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
+    case "changelog": // fork: project changelog
+      return <ScrollTextIcon className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
