@@ -528,19 +528,32 @@ describe("cadence and summaries", () => {
   });
 
   it("retries a failed summary with backoff and gives up at the third failure", () => {
-    expect(summaryAfterFailure({ attempts: 0, now: T0 })).toEqual({
+    expect(summaryAfterFailure({ attempts: 0, now: T0, charged: true })).toEqual({
       _tag: "Retry",
       attempts: 1,
       nextAttemptAt: T0 + 5 * MINUTE,
     });
-    expect(summaryAfterFailure({ attempts: 1, now: T0 })).toEqual({
+    expect(summaryAfterFailure({ attempts: 1, now: T0, charged: true })).toEqual({
       _tag: "Retry",
       attempts: 2,
       nextAttemptAt: T0 + 30 * MINUTE,
     });
-    expect(summaryAfterFailure({ attempts: 2, now: T0 })).toEqual({
+    expect(summaryAfterFailure({ attempts: 2, now: T0, charged: true })).toEqual({
       _tag: "Unavailable",
       attempts: 3,
+    });
+  });
+
+  it("backs off an uncharged failure without spending an attempt", () => {
+    expect(summaryAfterFailure({ attempts: 0, now: T0, charged: false })).toEqual({
+      _tag: "Retry",
+      attempts: 0,
+      nextAttemptAt: T0 + 5 * MINUTE,
+    });
+    expect(summaryAfterFailure({ attempts: 2, now: T0, charged: false })).toEqual({
+      _tag: "Retry",
+      attempts: 2,
+      nextAttemptAt: T0 + 30 * MINUTE,
     });
   });
 

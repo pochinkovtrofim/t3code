@@ -331,6 +331,7 @@ export class ChangelogStore extends Context.Service<
         readonly unitKey: UnitKey;
         readonly inputHash: string;
         readonly attempts: number;
+        readonly charged: boolean;
       }>;
     }) => Effect.Effect<void, ChangelogStoreError>;
     readonly setThreadRefs: (input: {
@@ -782,7 +783,11 @@ const make = Effect.gen(function* () {
   )(
     function* (input) {
       for (const entry of input.entries) {
-        const next = summaryAfterFailure({ attempts: entry.attempts, now: input.now });
+        const next = summaryAfterFailure({
+          attempts: entry.attempts,
+          now: input.now,
+          charged: entry.charged,
+        });
         yield* sql`
           UPDATE fork_changelog_entries SET
             summary_state = ${next._tag === "Retry" ? "pending" : "unavailable"},

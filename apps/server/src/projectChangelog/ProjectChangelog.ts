@@ -570,6 +570,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
           generated._tag === "Success"
             ? new Map(generated.success.entries.map((answer) => [answer.key, answer]))
             : new Map();
+        const contested = new Set(generated._tag === "Success" ? generated.success.contested : []);
         if (generated._tag === "Failure") {
           yield* Effect.logWarning("project changelog summaries failed", {
             repository: key,
@@ -609,6 +610,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
                     unitKey: entry.unit.key,
                     inputHash: entry.unit.contentHash,
                     attempts: entry.summary.attempts,
+                    charged: !contested.has(entry.unit.key),
                   },
                 ],
           ),

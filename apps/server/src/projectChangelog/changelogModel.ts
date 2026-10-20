@@ -664,17 +664,23 @@ export const SUMMARY_BATCH_PROMPT_BYTES = 32_000;
 export const SUMMARY_MAX_ATTEMPTS = 3;
 const SUMMARY_RETRY_DELAYS_MS = [5 * 60_000, 30 * 60_000] as const;
 
-/** Where a failed summary goes next: retried after a backoff, or given up on at the cap. */
+/**
+ * Where a failed summary goes next: retried after a backoff, or given up on at the cap. An
+ * uncharged failure (the model answered the entry twice) backs off without spending an attempt.
+ */
 export function summaryAfterFailure(input: {
   readonly attempts: number;
   readonly now: number;
+  readonly charged: boolean;
 }):
   | { readonly _tag: "Retry"; readonly attempts: number; readonly nextAttemptAt: number }
   | { readonly _tag: "Unavailable"; readonly attempts: number } {
-  const attempts = input.attempts + 1;
+  const attempts = input.charged ? input.attempts + 1 : input.attempts;
   if (attempts >= SUMMARY_MAX_ATTEMPTS) return { _tag: "Unavailable", attempts };
   const delay =
-    SUMMARY_RETRY_DELAYS_MS[Math.min(attempts - 1, SUMMARY_RETRY_DELAYS_MS.length - 1)]!;
+    SUMMARY_RETRY_DELAYS_MS[
+      Math.min(Math.max(attempts - 1, 0), SUMMARY_RETRY_DELAYS_MS.length - 1)
+    ]!;
   return { _tag: "Retry", attempts, nextAttemptAt: input.now + delay };
 }
 

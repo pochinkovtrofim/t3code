@@ -165,7 +165,7 @@ function makeGitHub() {
 
 function makeModel() {
   const calls: Array<ChangelogSummaryGenerationInput> = [];
-  const state = { failing: false };
+  const state = { failing: false, contested: new Set<string>() };
   const layer = Layer.mock(TextGeneration.TextGeneration)({
     generateChangelogSummaries: (input) =>
       // A real call suspends on a subprocess; yielding keeps the pass from finishing inside the sync.
@@ -180,12 +180,17 @@ function makeModel() {
                 }),
               )
             : Effect.succeed({
-                entries: input.units.map((unit) => ({
-                  key: unit.key,
-                  title: `Summary title for ${unit.key}`,
-                  summary: `What ${unit.key} changed.`,
-                  category: "improvement" as const,
-                })),
+                entries: input.units
+                  .filter((unit) => !state.contested.has(unit.key))
+                  .map((unit) => ({
+                    key: unit.key,
+                    title: `Summary title for ${unit.key}`,
+                    summary: `What ${unit.key} changed.`,
+                    category: "improvement" as const,
+                  })),
+                contested: input.units
+                  .filter((unit) => state.contested.has(unit.key))
+                  .map((unit) => unit.key),
               });
         }),
       ),
@@ -385,6 +390,32 @@ describe("ProjectChangelog", () => {
       const ready = yield* changelog.read({ projectId: p1 });
       assert.isTrue(ready.entries.every((entry) => entry.summaryState === "ready"));
       assert.strictEqual(ready.entries[0]!.title, "Summary title for pr:8");
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("keeps retrying an entry the model answered twice instead of giving up on it", () => {
+    const { model, layer } = harness();
+    model.state.contested = new Set(["pr:8"]);
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      yield* changelog.read({ projectId: p1 });
+      yield* changelog.drain;
+      // Three charged failures would give up by now; contested answers spend no attempt.
+      yield* TestClock.adjust(6 * MINUTE);
+      yield* TestClock.adjust(31 * MINUTE);
+      yield* changelog.drain;
+      const page = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(
+        page.entries.map((entry) => [entry.id, entry.summaryState]),
+        [
+          ["pr:8", "pending"],
+          ["push:c3", "ready"],
+          ["pr:7", "ready"],
+          ["push:c1", "ready"],
+        ],
+      );
+      assert.isAtLeast(model.calls.length, 3);
     }).pipe(Effect.provide(layer), atNow);
   });
 

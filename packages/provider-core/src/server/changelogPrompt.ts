@@ -55,9 +55,13 @@ export interface ChangelogSummary {
   readonly category: ChangelogCategory;
 }
 
-/** Only units the model answered usably; a missing key is the caller's failed attempt. */
+/**
+ * `entries`: the units the model answered usably. `contested`: units it answered more than once,
+ * so no answer can be trusted and the unit is not to blame. Any other key is a failed attempt.
+ */
 export interface ChangelogSummaryGenerationResult {
   readonly entries: ReadonlyArray<ChangelogSummary>;
+  readonly contested: ReadonlyArray<string>;
 }
 
 const ChangelogSummariesOutput = Schema.Struct({
@@ -73,17 +77,17 @@ const ChangelogSummariesOutput = Schema.Struct({
 
 const promptId = (index: number) => `c${index + 1}`;
 
-/** Content cannot close the block it sits in. */
-const fenced = (text: string) => text.replace(/<\/(change|session)/gi, "<\\/$1");
+/** Repository text cannot open or close a block, so it cannot forge another change's answer. */
+const fenced = (text: string) => text.replaceAll("<", "&lt;");
 
 function renderUnit(unit: ChangelogPromptUnit, id: string): string {
   const pull = unit.pullRequest;
   const lines = [
     `<change id="${id}" kind="${pull === null ? "direct commits" : "pull request"}">`,
     ...(pull === null
-      ? [`Pushed by ${unit.authors.join(", ") || "unknown"}.`]
+      ? [`Pushed by ${fenced(unit.authors.join(", ")) || "unknown"}.`]
       : [
-          `Pull request #${pull.number}${pull.author === null ? "" : ` by ${pull.author}`}: ${fenced(pull.title)}`,
+          `Pull request #${pull.number}${pull.author === null ? "" : ` by ${fenced(pull.author)}`}: ${fenced(pull.title)}`,
           ...(pull.body.trim() === ""
             ? []
             : ["Description:", fenced(limitSection(pull.body.trim(), MAX_BODY_CHARS))]),
@@ -154,22 +158,35 @@ function sanitizeTitle(raw: string): string {
   return capAtWord(title.charAt(0).toUpperCase() + title.slice(1), MAX_TITLE_CHARS);
 }
 
-/** Maps answers back to the caller's keys and holds every text to its cap. */
+/**
+ * Maps answers back to the caller's keys and holds every text to its cap. An id answered twice
+ * drops every answer for it: either could be one that repository text talked the model into.
+ */
 export function sanitizeChangelogSummaries(
   units: ReadonlyArray<Pick<ChangelogPromptUnit, "key">>,
   generated: typeof ChangelogSummariesOutput.Type,
 ): ChangelogSummaryGenerationResult {
   const keyById = new Map(units.map((unit, index) => [promptId(index), unit.key]));
-  const entries = new Map<string, ChangelogSummary>();
+  const answersByKey = new Map<string, Array<(typeof generated.entries)[number]>>();
   for (const answer of generated.entries) {
     const key = keyById.get(answer.id.trim());
-    if (key === undefined || entries.has(key)) continue;
+    if (key !== undefined) answersByKey.set(key, [...(answersByKey.get(key) ?? []), answer]);
+  }
+  const entries: Array<ChangelogSummary> = [];
+  const contested: Array<string> = [];
+  for (const [key, [answer, ...rest]] of answersByKey) {
+    if (answer === undefined) continue;
+    if (rest.length > 0) {
+      contested.push(key);
+      continue;
+    }
     const title = sanitizeTitle(answer.title);
     const summary = capAtWord(singleLine(answer.summary), MAX_SUMMARY_CHARS);
-    if (title === "" || summary === "") continue;
-    entries.set(key, { key, title, summary, category: answer.category });
+    if (title !== "" && summary !== "") {
+      entries.push({ key, title, summary, category: answer.category });
+    }
   }
-  return { entries: [...entries.values()] };
+  return { entries, contested };
 }
 
 /** Calls the operation, or answers unsupported for a provider that does not implement it. */

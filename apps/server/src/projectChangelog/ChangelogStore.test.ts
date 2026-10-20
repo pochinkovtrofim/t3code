@@ -341,7 +341,7 @@ layer("ChangelogStore", (it) => {
         store.recordSummaryFailures({
           key,
           now,
-          entries: [{ unitKey: prOne.key, inputHash: prOne.contentHash, attempts }],
+          entries: [{ unitKey: prOne.key, inputHash: prOne.contentHash, attempts, charged: true }],
         });
       yield* fail(0, T0);
       assert.deepEqual(yield* due(T0 + MINUTE), []);
