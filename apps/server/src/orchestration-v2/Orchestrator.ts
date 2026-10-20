@@ -10,6 +10,7 @@ import {
   usageLimitBlockedRun,
 } from "@t3tools/shared/orchestrationV2ThreadError";
 import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
+import { isProjectThreadId } from "@t3tools/shared/projectThread"; // fork: project threads
 import {
   normalizeThreadPullRequestKey,
   visibleThreadPullRequests,
@@ -4947,6 +4948,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       userMessages.length > 0 && userMessages.every(isNativeMaintenanceCommand);
     if (
       !isNativeMaintenanceCommand(command) &&
+      !isProjectThreadId(command.threadId) && // fork: project threads
       ((command.titleSeed !== undefined &&
         (yield* projectionStore
           .getMessageCount(command.threadId)
