@@ -85,7 +85,8 @@ export const ProjectChangelogProduction = Schema.Struct({
 export type ProjectChangelogProduction = typeof ProjectChangelogProduction.Type;
 
 export const ProjectChangelogSyncProblem = Schema.Struct({
-  reason: Schema.Literals(["credentials", "not-found", "rate-limited", "unreachable"]),
+  /** `internal`: the sync failed on a bug in this server, not on GitHub. */
+  reason: Schema.Literals(["credentials", "not-found", "rate-limited", "unreachable", "internal"]),
   retryAt: Schema.NullOr(IsoDateTime),
 });
 export type ProjectChangelogSyncProblem = typeof ProjectChangelogSyncProblem.Type;

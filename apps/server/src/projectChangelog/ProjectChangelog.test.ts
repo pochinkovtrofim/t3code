@@ -109,6 +109,8 @@ function makeGitHub() {
     calls: [] as Array<string>,
     /** Holds every head read until released, so a test can act while a sync is in flight. */
     headGate: null as Gate | null,
+    /** Head reads left that die, as a bug in reading or applying a sync would. */
+    headDefects: 0,
   };
   const layer = Layer.succeed(
     GitHubLandings.GitHubLandings,
@@ -116,6 +118,10 @@ function makeGitHub() {
       readHead: () =>
         Effect.gen(function* () {
           state.calls.push("readHead");
+          if (state.headDefects > 0) {
+            state.headDefects -= 1;
+            return yield* Effect.die(new Error("head read crashed"));
+          }
           if (state.headGate !== null) {
             yield* Deferred.succeed(state.headGate.entered, undefined);
             yield* Deferred.await(state.headGate.release);
@@ -165,14 +171,15 @@ function makeGitHub() {
 
 function makeModel() {
   const calls: Array<ChangelogSummaryGenerationInput> = [];
-  const state = { failing: false, contested: new Set<string>() };
+  const state = { failure: null as "fails" | "dies" | null, contested: new Set<string>() };
   const layer = Layer.mock(TextGeneration.TextGeneration)({
     generateChangelogSummaries: (input) =>
       // A real call suspends on a subprocess; yielding keeps the pass from finishing inside the sync.
       Effect.yieldNow.pipe(
         Effect.andThen(() => {
           calls.push(input);
-          return state.failing
+          if (state.failure === "dies") return Effect.die(new Error("model call crashed"));
+          return state.failure === "fails"
             ? Effect.fail(
                 new TextGenerationError({
                   operation: "generateChangelogSummaries",
@@ -214,14 +221,24 @@ function harness(
   const github = makeGitHub();
   const model = makeModel();
   const projects = options.projects ?? [shell("p1")];
+  /** Calls left that die, as a bug behind the project service would. */
+  const crashes = { listShells: 0, getShell: 0 };
+  const crashOnce = (name: keyof typeof crashes) =>
+    crashes[name] > 0
+      ? Effect.sync(() => (crashes[name] -= 1)).pipe(
+          Effect.andThen(Effect.die(new Error(`${name} crashed`))),
+        )
+      : Effect.void;
   const layer = ProjectChangelog.layerWithoutGitHub().pipe(
     Layer.provide(github.layer),
     Layer.provide(model.layer),
     Layer.provide(
       Layer.mock(ProjectService.ProjectService)({
-        listShells: () => Effect.succeed(projects),
+        listShells: () => crashOnce("listShells").pipe(Effect.as(projects)),
         getShell: (projectId) =>
-          Effect.succeed(Option.fromNullishOr(projects.find((p) => p.id === projectId))),
+          crashOnce("getShell").pipe(
+            Effect.as(Option.fromNullishOr(projects.find((p) => p.id === projectId))),
+          ),
       }),
     ),
     Layer.provide(
@@ -250,7 +267,7 @@ function harness(
     Layer.provide(ServerSettings.layerTest(options.settings ?? {})),
     Layer.provideMerge(SqlitePersistence.layerMemory),
   );
-  return { github, model, layer };
+  return { github, model, crashes, layer };
 }
 
 const insertThread = (input: {
@@ -368,34 +385,37 @@ describe("ProjectChangelog", () => {
     }).pipe(Effect.provide(layer), atNow);
   });
 
-  it.effect("holds a repository's summaries after a failed model call", () => {
-    const { model, layer } = harness();
-    model.state.failing = true;
-    return Effect.gen(function* () {
-      yield* insertThread({ id: "project-thread:one", project: "p1" });
-      const changelog = yield* ProjectChangelog.ProjectChangelog;
-      yield* changelog.read({ projectId: p1 });
-      yield* changelog.drain;
-      assert.strictEqual(model.calls.length, 1);
-      // The loop passes every minute; none of them calls the failing model again yet.
-      yield* TestClock.adjust(3 * MINUTE);
-      assert.strictEqual(model.calls.length, 1);
-      const pending = yield* changelog.read({ projectId: p1 });
-      assert.isTrue(pending.entries.every((entry) => entry.summaryState === "pending"));
-      assert.isTrue(pending.entries.every((entry) => entry.summary === null));
+  it.effect.each(["fails", "dies"] as const)(
+    "holds a repository's summaries after a model call that %s",
+    (failure) => {
+      const { model, layer } = harness();
+      model.state.failure = failure;
+      return Effect.gen(function* () {
+        yield* insertThread({ id: "project-thread:one", project: "p1" });
+        const changelog = yield* ProjectChangelog.ProjectChangelog;
+        yield* changelog.read({ projectId: p1 });
+        yield* changelog.drain;
+        assert.strictEqual(model.calls.length, 1);
+        // The loop passes every minute; none of them calls the failing model again yet.
+        yield* TestClock.adjust(3 * MINUTE);
+        assert.strictEqual(model.calls.length, 1);
+        const pending = yield* changelog.read({ projectId: p1 });
+        assert.isTrue(pending.entries.every((entry) => entry.summaryState === "pending"));
+        assert.isTrue(pending.entries.every((entry) => entry.summary === null));
 
-      model.state.failing = false;
-      yield* TestClock.adjust(30 * MINUTE);
-      yield* changelog.drain;
-      const ready = yield* changelog.read({ projectId: p1 });
-      assert.isTrue(ready.entries.every((entry) => entry.summaryState === "ready"));
-      assert.strictEqual(ready.entries[0]!.title, "Summary title for pr:8");
-    }).pipe(Effect.provide(layer), atNow);
-  });
+        model.state.failure = null;
+        yield* TestClock.adjust(30 * MINUTE);
+        yield* changelog.drain;
+        const ready = yield* changelog.read({ projectId: p1 });
+        assert.isTrue(ready.entries.every((entry) => entry.summaryState === "ready"));
+        assert.strictEqual(ready.entries[0]!.title, "Summary title for pr:8");
+      }).pipe(Effect.provide(layer), atNow);
+    },
+  );
 
   it.effect("rides out a provider outage without giving up on any entry", () => {
     const { model, layer } = harness();
-    model.state.failing = true;
+    model.state.failure = "fails";
     return Effect.gen(function* () {
       yield* insertThread({ id: "project-thread:one", project: "p1" });
       const changelog = yield* ProjectChangelog.ProjectChangelog;
@@ -407,7 +427,7 @@ describe("ProjectChangelog", () => {
       const during = yield* changelog.read({ projectId: p1 });
       assert.isTrue(during.entries.every((entry) => entry.summaryState === "pending"));
 
-      model.state.failing = false;
+      model.state.failure = null;
       yield* TestClock.adjust(60 * MINUTE);
       yield* changelog.drain;
       const after = yield* changelog.read({ projectId: p1 });
@@ -464,6 +484,57 @@ describe("ProjectChangelog", () => {
         ["pr:8", "push:c3", "pr:7", "push:c1"],
       );
       assert.strictEqual(github.state.calls.filter((call) => call === "lookup:c3").length, 3);
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("shows a sync that crashed, and recovers on the next one", () => {
+    const { github, layer } = harness();
+    github.state.headDefects = 1;
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const crashed = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(crashed.sync.problem, { reason: "internal", retryAt: null });
+
+      yield* TestClock.adjust(16 * MINUTE);
+      yield* changelog.drain;
+      const recovered = yield* changelog.read({ projectId: p1 });
+      assert.isNull(recovered.sync.problem);
+      assert.strictEqual(recovered.entries.length, 4);
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("keeps the background loop running after a pass crashes", () => {
+    const { github, crashes, layer } = harness();
+    // The loop's first pass runs as the layer starts.
+    crashes.listShells = 1;
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      yield* TestClock.adjust(MINUTE);
+      yield* (yield* ProjectChangelog.ProjectChangelog).drain;
+      assert.isTrue(github.state.calls.includes("readHistory"));
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("keeps syncing after merges once handling one crashed", () => {
+    const { github, crashes, layer } = harness();
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const { hub: merges } = yield* Merges;
+      yield* changelog.read({ projectId: p1 });
+      yield* changelog.drain;
+
+      const merge = { projectId: p1, repository: "acme/web", number: 8, mergedAt: isoOf(NOW) };
+      crashes.getShell = 1;
+      const gate = yield* makeGate;
+      github.state.headGate = gate;
+      yield* PubSub.publish(merges, merge);
+      yield* PubSub.publish(merges, merge);
+      // The second merge still reaches the loop, which starts a sync.
+      yield* Deferred.await(gate.entered);
+      yield* Deferred.succeed(gate.release, undefined);
+      yield* changelog.drain;
     }).pipe(Effect.provide(layer), atNow);
   });
 

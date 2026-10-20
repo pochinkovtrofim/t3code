@@ -38,6 +38,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
@@ -154,6 +155,12 @@ function decodeCursor(cursor: string | undefined): number | null {
   return match === null ? null : Number(match[1]);
 }
 
+/** A defect while reading or applying a sync, kept so the page says the sync failed. */
+interface SyncCrash {
+  readonly _tag: "SyncCrash";
+  readonly defect: unknown;
+}
+
 function lastAttemptAt(sync: ChangelogStore.RepositorySyncStatus): number | null {
   return sync._tag === "NeverSynced" ? null : sync.at;
 }
@@ -163,7 +170,7 @@ function lastSyncedAt(sync: ChangelogStore.RepositorySyncStatus): number | null 
 }
 
 function syncProblemOf(
-  error: GitHubLandings.GitHubLandingsError,
+  error: GitHubLandings.GitHubLandingsError | SyncCrash,
 ): Pick<
   Extract<ChangelogStore.RepositorySyncStatus, { readonly _tag: "Failed" }>,
   "reason" | "retryAt"
@@ -181,6 +188,8 @@ function syncProblemOf(
       return { reason: "rate-limited", retryAt: error.retryAt ?? null };
     case "SourceControlRateLimitPausedError":
       return { reason: "rate-limited", retryAt: error.retryAt };
+    case "SyncCrash":
+      return { reason: "internal", retryAt: null };
     default:
       return { reason: "unreachable", retryAt: null };
   }
@@ -634,6 +643,16 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
             errorTag: error._tag,
           }),
         ),
+        // Held like a failed call, so a defect that repeats does not rerun the model every tick.
+        Effect.catchDefect((defect) =>
+          Effect.logError("project changelog summaries crashed", {
+            repository: target.repository.key,
+            defect,
+          }).pipe(
+            Effect.andThen(Clock.currentTimeMillis),
+            Effect.flatMap((now) => holdSummaries(target.repository.key, now)),
+          ),
+        ),
       ),
   );
 
@@ -641,7 +660,12 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     function* (target: RepositoryTarget) {
       const key = target.repository.key;
       const row = yield* store.ensureRepository(target.repository);
-      const outcome = yield* readGitHub(target.repository, row).pipe(Effect.result);
+      const outcome = yield* readGitHub(target.repository, row).pipe(
+        Effect.result,
+        Effect.catchDefect((defect) =>
+          Effect.succeed(Result.fail({ _tag: "SyncCrash", defect } satisfies SyncCrash)),
+        ),
+      );
       const now = yield* Clock.currentTimeMillis;
       const watched = yield* isWatched(key);
       if (outcome._tag === "Success") {
@@ -657,10 +681,15 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
         return yield* failure;
       }
       const problem = syncProblemOf(failure);
-      yield* Effect.logWarning("project changelog sync failed", {
-        repository: key,
-        errorTag: failure._tag,
-      });
+      yield* failure._tag === "SyncCrash"
+        ? Effect.logError("project changelog sync crashed", {
+            repository: key,
+            defect: failure.defect,
+          })
+        : Effect.logWarning("project changelog sync failed", {
+            repository: key,
+            errorTag: failure._tag,
+          });
       yield* store.setSyncStatus(
         key,
         { _tag: "Failed", at: now, lastSyncedAt: lastSyncedAt(row.sync), ...problem },
@@ -673,6 +702,13 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
           Effect.logWarning("project changelog sync could not be stored", {
             repository: target.repository.key,
             errorTag: error._tag,
+          }),
+        ),
+        // Nothing joins these fibers, so a defect would end them without a trace.
+        Effect.catchDefect((defect) =>
+          Effect.logError("project changelog sync crashed", {
+            repository: target.repository.key,
+            defect,
           }),
         ),
         // The summary pass is registered before readers hear the sync finished, so a drain
@@ -734,6 +770,11 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
             Effect.as(MAX_TICK_MS),
           ),
         ),
+        Effect.catchDefect((defect) =>
+          Effect.logError("project changelog pass crashed", { defect }).pipe(
+            Effect.as(MAX_TICK_MS),
+          ),
+        ),
       );
       yield* Effect.race(Effect.sleep(delay), Queue.take(wake));
     }
@@ -749,6 +790,9 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
           target._tag === "Ready" && target.eligible ? nudge(target.repository.key) : Effect.void,
         ),
         Effect.ignore,
+        Effect.catchDefect((defect) =>
+          Effect.logError("project changelog merge handling crashed", { defect }),
+        ),
       ),
     ),
   );

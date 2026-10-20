@@ -6,7 +6,7 @@
 // Everything except summaries is a cache of GitHub, so a schema version this build does not know
 // drops and rebuilds the tables.
 
-import { ProjectId, ThreadId } from "@t3tools/contracts";
+import { ProjectChangelogSyncProblem, ProjectId, ThreadId } from "@t3tools/contracts";
 import { isProjectThreadId, PROJECT_THREAD_ID_PREFIX } from "@t3tools/shared/projectThread";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -106,12 +106,7 @@ const DDL = [
 /** Entries kept per repository; older entries and their commits are pruned after each sync. */
 export const RETAINED_ENTRIES = 500;
 
-const SyncProblemReason = Schema.Literals([
-  "credentials",
-  "not-found",
-  "rate-limited",
-  "unreachable",
-]);
+const SyncProblemReason = ProjectChangelogSyncProblem.fields.reason;
 
 const RepositorySyncStatus = Schema.Union([
   Schema.TaggedStruct("NeverSynced", {}),
