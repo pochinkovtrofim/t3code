@@ -278,6 +278,20 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
   const projectThreadsEnabled = (settings: ServerSettingsValue, shell: OrchestrationProjectShell) =>
     resolveProjectSettings(settings, shell.id, shell).settings.projectThreadsEnabled;
 
+  /** Background work runs for a project with project threads on and a project thread. */
+  const eligibleProjects = Effect.fn("ProjectChangelog.eligibleProjects")(function* (
+    shells: ReadonlyArray<OrchestrationProjectShell>,
+  ) {
+    const settings = yield* serverSettings.getSettings;
+    const withProjectThread = yield* store.projectsWithProjectThread;
+    return {
+      settings,
+      eligible: shells.filter(
+        (shell) => withProjectThread.has(shell.id) && projectThreadsEnabled(settings, shell),
+      ),
+    };
+  });
+
   // The shell's identity comes from a cache that is empty right after startup.
   const identityOf = (shell: OrchestrationProjectShell) =>
     shell.repositoryIdentity === null
@@ -285,9 +299,10 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       : Effect.succeed(shell.repositoryIdentity);
 
   const listTargets = Effect.fn("ProjectChangelog.listTargets")(function* () {
-    const settings = yield* serverSettings.getSettings;
     const shells = yield* projects.listShells();
-    const withProjectThread = yield* store.projectsWithProjectThread;
+    const eligibleIds = new Set(
+      (yield* eligibleProjects(shells)).eligible.map((shell) => shell.id),
+    );
     const byKey = new Map<
       RepositoryKey,
       {
@@ -305,9 +320,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
         eligible: [],
       };
       target.projects.push(shell);
-      if (withProjectThread.has(shell.id) && projectThreadsEnabled(settings, shell)) {
-        target.eligible.push(shell);
-      }
+      if (eligibleIds.has(shell.id)) target.eligible.push(shell);
       byKey.set(resolution.repository.key, target);
     }
     return byKey as ReadonlyMap<RepositoryKey, RepositoryTarget>;
@@ -641,11 +654,13 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
   const summarizeRepository = Effect.fn("ProjectChangelog.summarizeRepository")(
     function* (target: RepositoryTarget) {
       const key = target.repository.key;
-      const owner = ownerProject(target.eligible);
-      if (owner === null) return;
       const heldUntil = (yield* Ref.get(summaryHolds)).get(key)?.until ?? 0;
       if (heldUntil > (yield* Clock.currentTimeMillis)) return;
       for (;;) {
+        // A backlog can outlast the settings and project threads it started under.
+        const { settings, eligible } = yield* eligibleProjects(target.projects);
+        const owner = ownerProject(eligible);
+        if (owner === null) return;
         const pending = yield* store.pendingSummaries({
           key,
           now: yield* Clock.currentTimeMillis,
@@ -659,7 +674,6 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
             promptUnitOf(entry, refs.get(entry.unit.key) ?? []),
           ),
         );
-        const settings = yield* serverSettings.getSettings;
         const modelSelection = resolveProjectSettings(settings, owner.id, owner).settings
           .textGenerationModelSelection;
         const generated = yield* modelSlots
@@ -822,6 +836,17 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     const current = yield* listTargets();
     yield* Ref.set(targets, current);
     const asked = yield* Ref.getAndSet(nudged, new Set());
+    // A repository that lost its last eligible project stops now, mid-read or mid-call.
+    const eligibleKeys = new Set(
+      [...current.values()]
+        .filter((target) => target.eligible.length > 0)
+        .map((target) => target.repository.key),
+    );
+    for (const fibers of [syncs, summaryPasses]) {
+      for (const [key] of [...fibers]) {
+        if (!eligibleKeys.has(key)) yield* FiberMap.remove(fibers, key);
+      }
+    }
     let wakeAt = now + MAX_TICK_MS;
     for (const target of current.values()) {
       if (target.eligible.length === 0) continue;

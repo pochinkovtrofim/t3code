@@ -189,13 +189,25 @@ function makeGitHub() {
 
 function makeModel() {
   const calls: Array<ChangelogSummaryGenerationInput> = [];
-  const state = { failure: null as "fails" | "dies" | null, contested: new Set<string>() };
+  const state = {
+    failure: null as "fails" | "dies" | null,
+    contested: new Set<string>(),
+    /** Holds every call until released, so a test can act while one is in flight. */
+    gate: null as Gate | null,
+  };
   const layer = Layer.mock(TextGeneration.TextGeneration)({
     generateChangelogSummaries: (input) =>
       // A real call suspends on a subprocess; yielding keeps the pass from finishing inside the sync.
       Effect.yieldNow.pipe(
         Effect.andThen(() => {
           calls.push(input);
+          return state.gate === null
+            ? Effect.void
+            : Deferred.succeed(state.gate.entered, undefined).pipe(
+                Effect.andThen(Deferred.await(state.gate.release)),
+              );
+        }),
+        Effect.andThen(() => {
           if (state.failure === "dies") return Effect.die(new Error("model call crashed"));
           return state.failure === "fails"
             ? Effect.fail(
@@ -283,7 +295,7 @@ function harness(
         })),
       ),
     ),
-    Layer.provide(ServerSettings.layerTest(options.settings ?? {})),
+    Layer.provideMerge(ServerSettings.layerTest(options.settings ?? {})),
     Layer.provideMerge(SqlitePersistence.layerMemory),
   );
   return { github, model, crashes, layer };
@@ -806,6 +818,56 @@ describe("ProjectChangelog", () => {
       yield* TestClock.adjust(16 * MINUTE);
       yield* changelog.drain;
       assert.deepStrictEqual(github.state.previousEnvironments, [null, "prod-eu"]);
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("stops a summary backlog once project threads are turned off", () => {
+    const { github, model, layer } = harness();
+    // Fourteen authors, fourteen entries: more than one model call's batch.
+    github.state.commits = Array.from({ length: 14 }, (_, index) =>
+      commit(
+        `d${index}`,
+        index === 0 ? null : `d${index - 1}`,
+        NOW - (60 - index) * MINUTE,
+        `dev${index}`,
+        `Change ${index}`,
+      ),
+    );
+    github.state.pulls = [];
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const gate = yield* makeGate;
+      model.state.gate = gate;
+      yield* changelog.read({ projectId: p1 });
+      yield* Deferred.await(gate.entered);
+
+      yield* settings.updateSettings({ projectThreadsEnabled: false });
+      yield* Deferred.succeed(gate.release, undefined);
+      yield* changelog.drain;
+      // The batch in flight finishes; the next one is never asked for.
+      assert.strictEqual(model.calls.length, 1);
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("interrupts a model call in flight once project threads are turned off", () => {
+    const { model, layer } = harness();
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const gate = yield* makeGate;
+      model.state.gate = gate;
+      yield* changelog.read({ projectId: p1 });
+      yield* Deferred.await(gate.entered);
+
+      yield* settings.updateSettings({ projectThreadsEnabled: false });
+      // The next pass of the loop sees the project is no longer eligible. The gate is never
+      // released, so the drain returns only because the call was interrupted.
+      yield* TestClock.adjust(MINUTE);
+      yield* changelog.drain;
+      assert.strictEqual(model.calls.length, 1);
     }).pipe(Effect.provide(layer), atNow);
   });
 
