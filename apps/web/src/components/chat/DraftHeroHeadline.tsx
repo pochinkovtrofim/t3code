@@ -42,6 +42,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { InlineButton } from "../ui/button";
 import { DraftProjectName } from "./DraftProjectName";
 import { DraftHeroProjectHeading } from "./DraftHeroProjectHeading";
+import { DraftHeroProjectThreads } from "./DraftHeroProjectThreads"; // fork: project threads
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 
 const ADD_PROJECT_VALUE = "add-project";
@@ -362,6 +363,8 @@ export function DraftHeroHeadline({
           {isScratchDraft ? projectSelector : orStartWithoutProject}
         </p>
       )}
+      {/* fork: project threads */}
+      <DraftHeroProjectThreads />
     </div>
   );
 }
