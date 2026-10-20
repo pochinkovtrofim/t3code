@@ -205,7 +205,10 @@ import {
 import { orderItemsByPreferredIds, sortLogicalProjectsForSidebar } from "./Sidebar.logic";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteContent } from "./CommandPaletteContent";
-import { useProjectThreadPaletteItem } from "./CommandPalette.projectThreads"; // fork: project threads
+import {
+  projectChangelogPaletteItem,
+  useProjectThreadPaletteItem,
+} from "./CommandPalette.projectThreads"; // fork: project threads, project changelog
 import {
   CommandPaletteTitleIcon,
   CommandPaletteVirtualizedResults,
@@ -1638,6 +1641,9 @@ function OpenCommandPaletteDialog(props: {
   // fork: project threads
   const openProjectThreadItem = useProjectThreadPaletteItem();
   if (openProjectThreadItem !== null) actionItems.push(openProjectThreadItem);
+  // fork: project changelog
+  const changelogItem = projectChangelogPaletteItem(activeThread, activeThreadServerConfig);
+  if (changelogItem !== null) actionItems.push(changelogItem);
 
   if (scratchTargetEnvironmentId !== null) {
     actionItems.push({
