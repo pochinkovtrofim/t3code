@@ -90,6 +90,8 @@ const DEFAULT_BACKFILL_MS = 30 * 24 * 60 * 60_000;
 const DEFAULT_MAX_SYNC_COMMITS = 500;
 /** `commits/{sha}/pulls` calls per sync; the rest wait for the next one. */
 const LOOKUP_BUDGET = 30;
+/** First-parent commits a catch-up gathers before it re-reads the window instead. */
+const MAX_CATCH_UP_COMMITS = 1_000;
 const READ_WAIT_MS = 5_000;
 const DEFAULT_READ_LIMIT = 20;
 const MIN_TICK_MS = 5_000;
@@ -130,6 +132,16 @@ interface RepositoryTarget {
   readonly projects: ReadonlyArray<OrchestrationProjectShell>;
   /** Projects with project threads on and a project thread: background work runs for these. */
   readonly eligible: ReadonlyArray<OrchestrationProjectShell>;
+}
+
+/** A walk back to the cursor that one sync could not finish; the next sync continues it. */
+interface CatchUp {
+  readonly cursorSha: string;
+  /** The head when the catch-up began: the cursor moves there once the walk is done. */
+  readonly targetSha: string;
+  /** Oldest first, ending at `targetSha`. */
+  readonly chain: ReadonlyArray<LandedCommit>;
+  readonly continueAt: string;
 }
 
 type ProjectTarget =
@@ -243,6 +255,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
   const nudged = yield* Ref.make<ReadonlySet<RepositoryKey>>(new Set());
   const watchers = yield* Ref.make<ReadonlyMap<RepositoryKey, number>>(new Map());
   const targets = yield* Ref.make<ReadonlyMap<RepositoryKey, RepositoryTarget>>(new Map());
+  const catchUps = yield* Ref.make<ReadonlyMap<RepositoryKey, CatchUp>>(new Map());
   /** Repositories whose last model calls failed outright, and how many in a row. */
   const summaryHolds = yield* Ref.make<
     ReadonlyMap<RepositoryKey, { readonly until: number; readonly failures: number }>
@@ -322,6 +335,58 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     } satisfies ProjectTarget;
   });
 
+  /**
+   * The first-parent commits after the cursor, oldest first, and the head they reach. Missing
+   * the cursor resets only when the head no longer contains it: a merge can bring the cursor in
+   * as a second parent, and more can land than one sync reads.
+   */
+  const readNewHistory = Effect.fn("ProjectChangelog.readNewHistory")(function* (
+    repository: GitHubRepository,
+    cursorSha: string,
+    headSha: string,
+  ) {
+    const key = repository.key;
+    const saved = (yield* Ref.get(catchUps)).get(key);
+    const resumed = saved?.cursorSha === cursorSha ? saved : undefined;
+    yield* Ref.update(catchUps, (all) => {
+      const next = new Map(all);
+      next.delete(key);
+      return next;
+    });
+    const target = resumed?.targetSha ?? headSha;
+    const history = yield* github.readHistory({
+      repository,
+      headSha: resumed?.continueAt ?? headSha,
+      stopAtSha: cursorSha,
+      since: null,
+      maxCommits: maxSyncCommits,
+    });
+    const chain = [...history.chain, ...(resumed?.chain ?? [])];
+    if (history.reachedCursor) return { _tag: "Append", chain, reached: target } as const;
+    if (!(yield* github.contains({ repository, sha: cursorSha, headSha: target }))) {
+      return { _tag: "Reset" } as const;
+    }
+    const newestKnown = yield* Effect.findFirst(chain.toReversed(), (commit) =>
+      store.ordinalOf(key, commit.sha).pipe(Effect.map((ordinal) => ordinal !== null)),
+    );
+    if (Option.isSome(newestKnown)) {
+      const after = chain.indexOf(newestKnown.value) + 1;
+      return { _tag: "Append", chain: chain.slice(after), reached: target } as const;
+    }
+    const continueAt = chain[0]?.parentShas[0];
+    if (
+      continueAt === undefined ||
+      history.chain.length === 0 ||
+      chain.length >= MAX_CATCH_UP_COMMITS
+    ) {
+      return { _tag: "Reset" } as const;
+    }
+    yield* Ref.update(catchUps, (all) =>
+      new Map(all).set(key, { cursorSha, targetSha: target, chain, continueAt }),
+    );
+    return { _tag: "CatchingUp" } as const;
+  });
+
   /** Reads GitHub once and applies what it learned. `backlog`: commits still wait. */
   const readGitHub = Effect.fn("ProjectChangelog.readGitHub")(function* (
     repository: GitHubRepository,
@@ -345,23 +410,26 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     let reset = false;
     let base = cursor?.headOrdinal ?? 0;
     let fresh: ReadonlyArray<LandedCommit> = [];
+    /** The head the stored history reaches once this sync is written. */
+    let reached = head.headSha;
+    let catchingUp = false;
     if (cursor === null) {
       fresh = yield* backfill();
     } else if (row.defaultBranch !== head.defaultBranch) {
       // A renamed or switched default branch is a different history.
       reset = true;
     } else if (cursor.headSha !== head.headSha) {
-      const history = yield* github.readHistory({
-        repository,
-        headSha: head.headSha,
-        stopAtSha: cursor.headSha,
-        since: null,
-        maxCommits: maxSyncCommits,
-      });
-      // Not reaching the cursor is a force push or more history than one sync reads. Both
-      // re-read the window: re-ingested entries come back with their summaries by key.
-      if (history.reachedCursor) fresh = history.chain;
-      else reset = true;
+      const next = yield* readNewHistory(repository, cursor.headSha, head.headSha);
+      if (next._tag === "Reset") {
+        // Re-ingested entries come back with their summaries by key.
+        reset = true;
+      } else if (next._tag === "CatchingUp") {
+        catchingUp = true;
+        reached = cursor.headSha;
+      } else {
+        fresh = next.chain;
+        reached = next.reached;
+      }
     }
     if (reset) {
       base = 0;
@@ -424,11 +492,11 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       const onChain = yield* ordinalOf(sha);
       if (onChain !== null) return onChain;
       // Deployed from a release branch or a PR branch: what it shares with the default branch.
-      const base = yield* github.mergeBase({ repository, sha, headSha: head.headSha });
+      const base = yield* github.mergeBase({ repository, sha, headSha: reached });
       return base === null ? null : yield* ordinalOf(base);
     });
     const previous = row.production;
-    const headMoved = reset || cursor?.headSha !== head.headSha;
+    const headMoved = reset || cursor?.headSha !== reached;
     const productionOf = Effect.fnUntraced(function* (signal: ProductionSignal, stale: boolean) {
       if (signal.source === "default-branch") return { signal, watermark: "head" as const, stale };
       // Reused only while nothing could move it: a reset renumbers, and a sha off the default
@@ -459,9 +527,10 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
 
     // A first sync with nothing in the window still records the head, or every later sync
     // would read the history again.
+    const behind = catchingUp || reached !== head.headSha;
     if (!reset && cursor !== null && landings.length === 0) {
       yield* store.setProduction(key, production);
-      return { backlog: false };
+      return { backlog: behind };
     }
     const tail = reset ? null : yield* store.tail(key);
     const { units, deferred } = groupChangeUnits({ repository, tail, landings });
@@ -469,14 +538,14 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     yield* store.applySync({
       key,
       defaultBranch: head.defaultBranch,
-      cursor: { headSha: head.headSha, headOrdinal: base + fresh.length },
+      cursor: { headSha: reached, headOrdinal: base + fresh.length },
       reset,
       commits: landings.map((landing) => ({ landing, unitKey: unitKeyOf(landing.ordinal) })),
       units,
       production,
       now,
     });
-    return { backlog: deferred.length > 0 };
+    return { backlog: behind || deferred.length > 0 };
   });
 
   /** Up to five threads per entry: linked to the entry's pull request, or on its branch. */

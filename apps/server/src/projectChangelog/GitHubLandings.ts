@@ -80,8 +80,9 @@ export class GitHubLandings extends Context.Service<
     >;
     /**
      * The first-parent chain from `headSha` back to `stopAtSha`, oldest first. `reachedCursor`
-     * is false when `stopAtSha` is not among the commits read: a force push, or more history
-     * than the page budget. Without a cursor it backfills to `since` or `maxCommits`.
+     * is false when the walk did not meet `stopAtSha`: a force push, a merge that made it a
+     * second parent, or more history than the page budget. Without a cursor it backfills to
+     * `since` or `maxCommits`.
      */
     readonly readHistory: (input: {
       readonly repository: GitHubRepository;
@@ -124,6 +125,12 @@ export class GitHubLandings extends Context.Service<
       readonly sha: string;
       readonly headSha: string;
     }) => Effect.Effect<string | null, GitHubLandingsError>;
+    /** Whether `headSha` still contains `sha`; false after a force push removed it. */
+    readonly contains: (input: {
+      readonly repository: GitHubRepository;
+      readonly sha: string;
+      readonly headSha: string;
+    }) => Effect.Effect<boolean, GitHubLandingsError>;
   }
 >()("t3/projectChangelog/GitHubLandings") {}
 
@@ -186,7 +193,10 @@ const RestTag = Schema.Struct({
   commit: Schema.Struct({ sha: Schema.String }),
 });
 
-const RestCompare = Schema.Struct({ merge_base_commit: Schema.Struct({ sha: Schema.String }) });
+const RestCompare = Schema.Struct({
+  status: Schema.String,
+  merge_base_commit: Schema.Struct({ sha: Schema.String }),
+});
 
 /** Trimmed and cut to `maxChars`; null when nothing is left, so a blank name falls through. */
 function bounded(text: string | null | undefined, maxChars: number): string | null {
@@ -347,10 +357,20 @@ const make = Effect.gen(function* () {
       pickLatestTag(tags.map((tag) => ({ name: tag.name, sha: tag.commit.sha }))),
     ),
   );
-  const getMergeBase = conditionalGet(
-    "changelogMergeBase",
-    decodeJson("changelogMergeBase", RestCompare, (compare) => compare.merge_base_commit.sha),
+  const getCompare = conditionalGet(
+    "changelogCompare",
+    decodeJson("changelogCompare", RestCompare, (compare) => ({
+      status: compare.status,
+      mergeBase: compare.merge_base_commit.sha,
+    })),
   );
+  // Page 2 of one commit each: the same status and merge base, without the changed files and
+  // patches that page 1 adds.
+  const compare = (repository: GitHubRepository, baseSha: string, headSha: string) =>
+    getCompare(
+      repository,
+      repoPath(repository, `compare/${baseSha}...${headSha}?per_page=1&page=2`),
+    );
 
   const readHead: GitHubLandings["Service"]["readHead"] = Effect.fn("GitHubLandings.readHead")(
     function* (repository) {
@@ -572,10 +592,20 @@ const make = Effect.gen(function* () {
 
   const mergeBase: GitHubLandings["Service"]["mergeBase"] = Effect.fn("GitHubLandings.mergeBase")(
     function* (input) {
-      return yield* getMergeBase(
-        input.repository,
-        repoPath(input.repository, `compare/${input.sha}...${input.headSha}?per_page=1`),
-      ).pipe(Effect.catchTags({ GitHubApiNotFoundError: () => Effect.succeed(null) }));
+      return yield* compare(input.repository, input.sha, input.headSha).pipe(
+        Effect.map((answer) => answer.mergeBase),
+        Effect.catchTags({ GitHubApiNotFoundError: () => Effect.succeed(null) }),
+      );
+    },
+  );
+
+  const contains: GitHubLandings["Service"]["contains"] = Effect.fn("GitHubLandings.contains")(
+    function* (input) {
+      return yield* compare(input.repository, input.sha, input.headSha).pipe(
+        Effect.map((answer) => answer.status === "ahead" || answer.status === "identical"),
+        // GitHub no longer knows a commit a force push removed.
+        Effect.catchTags({ GitHubApiNotFoundError: () => Effect.succeed(false) }),
+      );
     },
   );
 
@@ -586,6 +616,7 @@ const make = Effect.gen(function* () {
     lookupCommitPulls,
     readProduction,
     mergeBase,
+    contains,
   });
 });
 

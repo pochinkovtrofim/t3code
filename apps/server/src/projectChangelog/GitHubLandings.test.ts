@@ -462,9 +462,26 @@ describe("GitHubLandings", () => {
     },
   );
 
+  it.effect("says whether the head still contains the cursor", () => {
+    const compareAt = (base: string, head: string) =>
+      forkPath(`/compare/${base}...${head}?per_page=1&page=2`);
+    const { layer } = harness({
+      [compareAt(oldestSha, headSha)]: { body: { ...shapes.compare, status: "ahead" } },
+      [compareAt(middleSha, headSha)]: { body: shapes.compare },
+    });
+    return Effect.gen(function* () {
+      const landings = yield* GitHubLandings.GitHubLandings;
+      const contains = (sha: string) => landings.contains({ repository: fork, sha, headSha });
+      assert.isTrue(yield* contains(oldestSha));
+      assert.isFalse(yield* contains(middleSha));
+      // A commit a force push removed is unknown to GitHub.
+      assert.isFalse(yield* contains("0".repeat(40)));
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("reads the merge base from a comparison", () => {
     const { layer } = harness({
-      [forkPath(`/compare/${oldestSha}...${headSha}?per_page=1`)]: { body: shapes.compare },
+      [forkPath(`/compare/${oldestSha}...${headSha}?per_page=1&page=2`)]: { body: shapes.compare },
     });
     return Effect.gen(function* () {
       const landings = yield* GitHubLandings.GitHubLandings;

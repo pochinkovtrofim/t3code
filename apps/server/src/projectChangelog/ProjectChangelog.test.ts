@@ -167,6 +167,20 @@ function makeGitHub() {
           return state.production;
         }),
       mergeBase: (input) => Effect.succeed(state.mergeBases.get(input.sha) ?? null),
+      contains: (input) =>
+        Effect.sync(() => {
+          state.calls.push("contains");
+          const bySha = new Map(state.commits.map((value) => [value.sha, value]));
+          const seen = new Set<string>();
+          const queue = [input.headSha];
+          for (let sha = queue.pop(); sha !== undefined; sha = queue.pop()) {
+            if (sha === input.sha) return true;
+            if (seen.has(sha)) continue;
+            seen.add(sha);
+            queue.push(...(bySha.get(sha)?.parentShas ?? []));
+          }
+          return false;
+        }),
     }),
   );
   return { state, layer };
@@ -219,6 +233,7 @@ function harness(
   options: {
     readonly projects?: ReadonlyArray<OrchestrationProjectShell>;
     readonly settings?: Parameters<typeof ServerSettings.layerTest>[0];
+    readonly changelog?: ProjectChangelog.ProjectChangelogOptions;
   } = {},
 ) {
   const github = makeGitHub();
@@ -232,7 +247,7 @@ function harness(
           Effect.andThen(Effect.die(new Error(`${name} crashed`))),
         )
       : Effect.void;
-  const layer = ProjectChangelog.layerWithoutGitHub().pipe(
+  const layer = ProjectChangelog.layerWithoutGitHub(options.changelog).pipe(
     Layer.provide(github.layer),
     Layer.provide(model.layer),
     Layer.provide(
@@ -583,6 +598,68 @@ describe("ProjectChangelog", () => {
       assert.deepStrictEqual(
         after.entries.map((entry) => entry.inProduction),
         before.entries.map((entry) => entry.inProduction),
+      );
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("keeps the history a merge brings back in as a second parent", () => {
+    const { github, layer } = harness();
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      yield* changelog.read({ projectId: p1 });
+
+      // Someone committed on an old main and pulled before pushing: the old head is the merge's
+      // second parent, so the first-parent walk never meets it.
+      github.state.commits.push(commit("l1", "c3", NOW - 20 * MINUTE, "dave", "Local fix"), {
+        ...commit("m1", "l1", NOW - 10 * MINUTE, "dave", "Merge branch 'main'"),
+        parentShas: ["l1", "c4"],
+      });
+      yield* TestClock.adjust(16 * MINUTE);
+      const after = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(
+        after.entries.map((entry) => entry.id),
+        ["push:l1", "pr:8", "push:c3", "pr:7", "push:c1"],
+      );
+      assert.deepStrictEqual(after.entries[0]!.commits, {
+        count: 2,
+        headSha: "m1",
+        url: "https://github.com/acme/web/commit/m1",
+      });
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("catches up over more history than one sync reads instead of starting over", () => {
+    const { github, layer } = harness({ changelog: { maxSyncCommits: 2 } });
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const first = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(
+        first.entries.map((entry) => entry.id),
+        ["pr:8", "push:c3"],
+      );
+
+      const authors = ["dave", "erin", "frank", "grace", "heidi"];
+      authors.forEach((author, index) => {
+        github.state.commits.push(
+          commit(`n${index + 1}`, index === 0 ? "c4" : `n${index}`, NOW + index, author, author),
+        );
+      });
+      yield* TestClock.adjust(16 * MINUTE);
+      const during = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(
+        during.entries.map((entry) => entry.id),
+        ["pr:8", "push:c3"],
+      );
+      // Waiting history puts the repository on the one-minute cadence until it is read.
+      yield* TestClock.adjust(MINUTE);
+      yield* TestClock.adjust(MINUTE);
+      yield* changelog.drain;
+      const after = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(
+        after.entries.map((entry) => entry.id),
+        ["push:n5", "push:n4", "push:n3", "push:n2", "push:n1", "pr:8", "push:c3"],
       );
     }).pipe(Effect.provide(layer), atNow);
   });
