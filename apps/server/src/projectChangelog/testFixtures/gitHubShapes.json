@@ -1,0 +1,321 @@
+{
+  "recordedAt": "2026-10-20T09:45:34.052Z",
+  "repository": {
+    "default_branch": "main",
+    "full_name": "pochinkovtrofim/t3code"
+  },
+  "headSha": "effb4337e58b1db215e8293f48bc110e6b2176a4",
+  "commits": [
+    {
+      "sha": "effb4337e58b1db215e8293f48bc110e6b2176a4",
+      "html_url": "https://github.com/pochinkovtrofim/t3code/commit/effb4337e58b1db215e8293f48bc110e6b2176a4",
+      "commit": {
+        "author": {
+          "name": "Theo Browne",
+          "email": "me@t3.gg",
+          "date": "2026-10-20T07:33:13Z"
+        },
+        "committer": {
+          "name": "GitHub",
+          "email": "noreply@github.com",
+          "date": "2026-10-20T07:33:13Z"
+        },
+        "message": "feat(web,server): add a project to another machine from Run on, .env files included (#22180)\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>"
+      },
+      "author": {
+        "login": "t3dotgg",
+        "type": "User"
+      },
+      "committer": {
+        "login": "web-flow",
+        "type": "User"
+      },
+      "parents": [
+        {
+          "sha": "5a86fe433f895149f7330f3daea63afec3a5e93c"
+        }
+      ]
+    },
+    {
+      "sha": "5a86fe433f895149f7330f3daea63afec3a5e93c",
+      "html_url": "https://github.com/pochinkovtrofim/t3code/commit/5a86fe433f895149f7330f3daea63afec3a5e93c",
+      "commit": {
+        "author": {
+          "name": "shivam",
+          "email": "91240327+shivamhwp@users.noreply.github.com",
+          "date": "2026-10-20T07:31:05Z"
+        },
+        "committer": {
+          "name": "GitHub",
+          "email": "noreply@github.com",
+          "date": "2026-10-20T07:31:05Z"
+        },
+        "message": "fix(mobile): Android no longer freezes when you go back from a running thread (#19292)\n\nCo-authored-by: PR Batch Tester <agent@local.test>\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>"
+      },
+      "author": {
+        "login": "shivamhwp",
+        "type": "User"
+      },
+      "committer": {
+        "login": "web-flow",
+        "type": "User"
+      },
+      "parents": [
+        {
+          "sha": "e2875821820e34047bc70bc786b8b39ef3fc35eb"
+        }
+      ]
+    },
+    {
+      "sha": "e2875821820e34047bc70bc786b8b39ef3fc35eb",
+      "html_url": "https://github.com/pochinkovtrofim/t3code/commit/e2875821820e34047bc70bc786b8b39ef3fc35eb",
+      "commit": {
+        "author": {
+          "name": "Theo Browne",
+          "email": "me@t3.gg",
+          "date": "2026-10-20T07:14:03Z"
+        },
+        "committer": {
+          "name": "GitHub",
+          "email": "noreply@github.com",
+          "date": "2026-10-20T07:14:03Z"
+        },
+        "message": "feat(server): analytics records a stable install id and who owns each install (#21506)\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>"
+      },
+      "author": {
+        "login": "t3dotgg",
+        "type": "User"
+      },
+      "committer": {
+        "login": "web-flow",
+        "type": "User"
+      },
+      "parents": [
+        {
+          "sha": "e0092765769fe66ebdd0ce257689e07df60becea"
+        }
+      ]
+    }
+  ],
+  "commitPulls": [
+    {
+      "number": 22180,
+      "state": "closed",
+      "title": "feat(web,server): add a project to another machine from Run on, .env files included",
+      "body": "Getting a repo from one machine onto another meant a manual clone, then copying `.env` and other gitignored files by hand. The \"Run on\" menu only lists machines that already have the project, so there was no way to start that from the place you pick a machine.\n\nNow \"Run on\" has a faded \"Add to another machine ›\" item. Hover it and pick a connected machine. A dialog shows source → target, lets you pick SSH or HTTPS and the folder, and lists the source's gitignored files with `.env*` checked. It clones with the existing tracked clone (same progress, cancel and retry toasts). After the clone fini…",
+      "html_url": "https://github.com/pingdotgg/t3code/pull/22180",
+      "user": {
+        "login": "t3dotgg",
+        "type": "User"
+      },
+      "created_at": "2026-10-20T07:05:30Z",
+      "updated_at": "2026-10-20T07:33:16Z",
+      "closed_at": "2026-10-20T07:33:13Z",
+      "merged_at": "2026-10-20T07:33:13Z",
+      "merge_commit_sha": "effb4337e58b1db215e8293f48bc110e6b2176a4",
+      "head": {
+        "ref": "t3/clone-repo-to-other-machine",
+        "sha": "ad0e2a03c53be320c7fffbe8c7ec4e8dda451471",
+        "repo": {
+          "full_name": "pingdotgg/t3code"
+        }
+      },
+      "base": {
+        "ref": "main",
+        "sha": "e2875821820e34047bc70bc786b8b39ef3fc35eb",
+        "repo": {
+          "full_name": "pingdotgg/t3code"
+        }
+      }
+    }
+  ],
+  "closedPulls": [
+    {
+      "number": 12113,
+      "state": "closed",
+      "title": "fix(web): distinguish project filter from new project",
+      "body": "## Problem\r\n\r\nThe sidebar project filter used the same folder metaphor as the adjacent new-project action, making the two controls difficult to distinguish.\r\n\r\n## Fix\r\n\r\nUse the existing list-filter icon for the project filter's unscoped state. Selected projects continue to show their favicon, and the search and action layout is unchanged.\r\n\r\n## Verification\r\n\r\n- `vp fmt apps/web/src/components/Sidebar.tsx apps/web/src/components/sidebar/SidebarThreadHeader.tsx --check`\r\n- `vp lint apps/web/src/components/Sidebar.tsx apps/web/src/components/sidebar/SidebarThreadHeader.tsx --report-unused-disab…",
+      "html_url": "https://github.com/pingdotgg/t3code/pull/12113",
+      "user": {
+        "login": "voltcrash",
+        "type": "User"
+      },
+      "created_at": "2026-09-16T17:34:15Z",
+      "updated_at": "2026-10-20T09:25:14Z",
+      "closed_at": "2026-10-09T15:51:04Z",
+      "merged_at": "2026-10-09T15:51:04Z",
+      "merge_commit_sha": "22ccf8a3dfc9094b4ccdb689e128c67bacbbcdf5",
+      "head": {
+        "ref": "t3code/clarify-project-filter-icon",
+        "sha": "aed9337b5ca59ee48bbb8c7edb94d0409d26e116",
+        "repo": {
+          "full_name": "voltcrash/t3cocoa"
+        }
+      },
+      "base": {
+        "ref": "main",
+        "sha": "cd41c4ada0c70cc2eec95ecd7266f3dab010c58c",
+        "repo": {
+          "full_name": "pingdotgg/t3code"
+        }
+      }
+    },
+    {
+      "number": 12209,
+      "state": "closed",
+      "title": "fix(web): place notification icons after titles",
+      "body": "Iterates on #12202 \r\n\r\nNotification status icons currently sit before the title while the description starts at the content edge, leaving the title and description misaligned.\r\n\r\nMove built-in status icons and custom leading icons after the title in the shared toast body. This keeps titles and descriptions on the same left edge for regular and anchored notifications across web and desktop.\r\n\r\n## Verification\r\n\r\n- `vp lint apps/web/src/components/ui/toast.tsx --report-unused-disable-directives`\r\n- `vp fmt --check apps/web/src/components/ui/toast.tsx`\r\n- `vp run --filter @t3tools/web typecheck`\r…",
+      "html_url": "https://github.com/pingdotgg/t3code/pull/12209",
+      "user": {
+        "login": "voltcrash",
+        "type": "User"
+      },
+      "created_at": "2026-09-17T05:19:32Z",
+      "updated_at": "2026-10-20T09:25:07Z",
+      "closed_at": "2026-10-10T02:15:23Z",
+      "merged_at": "2026-10-10T02:15:23Z",
+      "merge_commit_sha": "07b80800124982bce94879a97767a5365987e8f1",
+      "head": {
+        "ref": "fix/notification-icon-after-title",
+        "sha": "023ce59129cbc2f0ac506bd81197b10c60ca7cd6",
+        "repo": {
+          "full_name": "voltcrash/t3cocoa"
+        }
+      },
+      "base": {
+        "ref": "main",
+        "sha": "33806e73555107b8ac8fb18fd15b9dfb87ec6557",
+        "repo": {
+          "full_name": "pingdotgg/t3code"
+        }
+      }
+    },
+    {
+      "number": 13240,
+      "state": "closed",
+      "title": "fix(marketing): use app wordmark in header",
+      "body": "## What Changed\r\n\r\nUse the desktop/web app's exact T3 SVG wordmark in the shared marketing header, with the app's muted “Code” text treatment.\r\n\r\n## Why\r\n\r\nThe marketing header currently shows a plain text name while the product uses a distinct wordmark. Matching them makes the brand consistent across the site and app.\r\n\r\n## UI Changes\r\n\r\nBefore:\r\n\r\n<img width=\"1440\" height=\"900\" alt=\"image\" src=\"https://github.com/user-attachments/assets/05493184-277f-49f7-8908-d1a26ac8051f\" />\r\n\r\n\r\nAfter:\r\n\r\n<img width=\"1440\" height=\"900\" alt=\"image\" src=\"https://github.com/user-attachments/assets/983ab7b0-2…",
+      "html_url": "https://github.com/pingdotgg/t3code/pull/13240",
+      "user": {
+        "login": "voltcrash",
+        "type": "User"
+      },
+      "created_at": "2026-09-23T09:11:44Z",
+      "updated_at": "2026-10-20T09:24:59Z",
+      "closed_at": "2026-10-09T17:39:25Z",
+      "merged_at": "2026-10-09T17:39:25Z",
+      "merge_commit_sha": "64972461c0606a4eafdd3cd08056155b6a2fea95",
+      "head": {
+        "ref": "t3code/marketing-header-logo",
+        "sha": "4dacbffc46368f0273e61ff885d54951b3ae34e4",
+        "repo": {
+          "full_name": "voltcrash/t3cocoa"
+        }
+      },
+      "base": {
+        "ref": "main",
+        "sha": "33806e73555107b8ac8fb18fd15b9dfb87ec6557",
+        "repo": {
+          "full_name": "pingdotgg/t3code"
+        }
+      }
+    }
+  ],
+  "deployments": [
+    {
+      "id": 7196442490,
+      "sha": "774c6c1953677094662e4ff83590e787aa19dcb2",
+      "ref": "main",
+      "task": "deploy",
+      "environment": "production",
+      "original_environment": "production",
+      "production_environment": false,
+      "transient_environment": false,
+      "created_at": "2026-10-20T09:38:58Z",
+      "creator": {
+        "login": "t3dotgg",
+        "type": "User"
+      }
+    },
+    {
+      "id": 7196018463,
+      "sha": "774c6c1953677094662e4ff83590e787aa19dcb2",
+      "ref": "main",
+      "task": "deploy",
+      "environment": "production",
+      "original_environment": "production",
+      "production_environment": false,
+      "transient_environment": false,
+      "created_at": "2026-10-20T09:16:21Z",
+      "creator": {
+        "login": "t3dotgg",
+        "type": "User"
+      }
+    },
+    {
+      "id": 7196005206,
+      "sha": "774c6c1953677094662e4ff83590e787aa19dcb2",
+      "ref": "main",
+      "task": "deploy",
+      "environment": "production",
+      "original_environment": "production",
+      "production_environment": false,
+      "transient_environment": false,
+      "created_at": "2026-10-20T09:15:38Z",
+      "creator": {
+        "login": "t3dotgg",
+        "type": "User"
+      }
+    }
+  ],
+  "deploymentStatuses": [
+    {
+      "id": 20081387982,
+      "state": "success",
+      "created_at": "2026-10-20T09:39:48Z",
+      "environment": "production",
+      "environment_url": "",
+      "log_url": "https://github.com/pingdotgg/t3code/actions/runs/39402180033/job/118559442739"
+    }
+  ],
+  "releaseLatest": {
+    "tag_name": "v0.1.0",
+    "name": "T3 Code v0.1.0",
+    "html_url": "https://github.com/pingdotgg/t3code/releases/tag/v0.1.0",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-10-15T23:18:08Z",
+    "target_commitish": "81493efb71e8e8244f95d3e9f71d8369654ab151"
+  },
+  "tags": [
+    {
+      "name": "v0.1.1-preview.20261019.3339",
+      "commit": {
+        "sha": "9afb1e0a4104b53a284eb8d9083b452950c8dd9b",
+        "url": "https://api.github.com/repos/pingdotgg/t3code/commits/9afb1e0a4104b53a284eb8d9083b452950c8dd9b"
+      }
+    },
+    {
+      "name": "v0.1.1-preview.20261018.3327",
+      "commit": {
+        "sha": "c11886f91dc7a5755910ee3c5969e318d7559751",
+        "url": "https://api.github.com/repos/pingdotgg/t3code/commits/c11886f91dc7a5755910ee3c5969e318d7559751"
+      }
+    },
+    {
+      "name": "v0.1.1-preview.20261018.3300",
+      "commit": {
+        "sha": "d24d16a56fdf32701f6dae73daa91ffd97700b86",
+        "url": "https://api.github.com/repos/pingdotgg/t3code/commits/d24d16a56fdf32701f6dae73daa91ffd97700b86"
+      }
+    }
+  ],
+  "compare": {
+    "status": "diverged",
+    "ahead_by": 963,
+    "behind_by": 29,
+    "merge_base_commit": {
+      "sha": "6a6ebb278dc70dd859439a3c28960a7d23a1e645"
+    }
+  }
+}
