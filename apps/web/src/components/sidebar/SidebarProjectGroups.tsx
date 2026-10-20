@@ -3,19 +3,7 @@ import { scopedProjectKey, scopeThreadRef } from "@t3tools/client-runtime/enviro
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { ScopedProjectRef, ScopedThreadRef } from "@t3tools/contracts";
-import {
-  AlarmClockIcon,
-  ChevronDownIcon,
-  CircleAlertIcon,
-  CircleCheckIcon,
-  CircleDashedIcon,
-  CircleDotDashedIcon,
-  FolderIcon,
-  MessageCircleQuestionIcon,
-  PlusIcon,
-  ShieldQuestionIcon,
-  type LucideIcon,
-} from "lucide-react";
+import { ChevronDownIcon, FolderIcon, PlusIcon } from "lucide-react";
 import {
   useLayoutEffect,
   useRef,
@@ -31,14 +19,7 @@ import { cn } from "../../lib/utils";
 import { projectEnvironment } from "../../state/projects";
 import { useUiStateStore } from "../../uiStateStore";
 import { ProjectFavicon } from "../ProjectFavicon";
-import {
-  hasUnseenCompletion,
-  isTrailingDoubleClick,
-  resolveSidebarThreadStatus,
-  resolveSidebarV2TopStatus,
-  resolveThreadLastVisitedAt,
-  type SidebarV2TopStatusKind,
-} from "../Sidebar.logic";
+import { isTrailingDoubleClick } from "../Sidebar.logic";
 import { createSidebarListMotion } from "../Sidebar.motion";
 import { Button } from "../ui/button";
 import { useSidebar } from "../ui/sidebar";
@@ -48,24 +29,7 @@ import type {
   SidebarProjectGroup,
   SidebarProjectGroupList,
 } from "./projectGroups.logic";
-
-const STATUS_PRESENTATION: Record<
-  SidebarV2TopStatusKind,
-  { readonly label: string; readonly Icon: LucideIcon; readonly className: string }
-> = {
-  working: { label: "Working", Icon: CircleDashedIcon, className: "text-info" },
-  waiting: { label: "Waiting", Icon: CircleDotDashedIcon, className: "text-muted-foreground" },
-  approval: { label: "Approval", Icon: ShieldQuestionIcon, className: "text-warning-foreground" },
-  input: {
-    label: "Input",
-    Icon: MessageCircleQuestionIcon,
-    className: "text-indigo-600 dark:text-indigo-300",
-  },
-  failed: { label: "Failed", Icon: CircleAlertIcon, className: "text-error" },
-  limited: { label: "Limited", Icon: CircleAlertIcon, className: "text-warning" },
-  done: { label: "Done", Icon: CircleCheckIcon, className: "text-success" },
-  woke: { label: "Woke", Icon: AlarmClockIcon, className: "text-warning" },
-};
+import { PROJECT_THREAD_STATUS_PRESENTATION, useProjectThreadStatus } from "./projectThreadStatus";
 
 // Not a sortable item: Sidebar.drag treats it as the gap before the first shelf,
 // so drops over the groups resolve to Active.
@@ -153,34 +117,21 @@ function SidebarProjectGroupHeader(props: {
 }) {
   const { group } = props;
   const manager = group.manager;
-  const openThread = manager?.kind === "open" ? manager.thread : null;
-  const localLastVisitedAt = useUiStateStore((state) =>
-    manager?.kind === "open" ? state.threadLastVisitedAtById[manager.threadKey] : undefined,
-  );
+  const status = useProjectThreadStatus(manager);
   const canEnsure = useAtomValue(
     projectEnvironment.ensureThread.permissionAtom(
       manager?.kind === "ensure" ? manager.projectRef.environmentId : null,
     ),
   );
   const opensManager = manager !== null && (manager.kind === "open" || canEnsure);
-  const statusKind =
-    openThread === null
-      ? null
-      : resolveSidebarV2TopStatus({
-          status: resolveSidebarThreadStatus(openThread),
-          isUnread: hasUnseenCompletion({
-            ...openThread,
-            lastVisitedAt: resolveThreadLastVisitedAt(openThread.lastVisitedAt, localLastVisitedAt),
-          }),
-          isWoke: false,
-        });
-  const status = statusKind === null ? null : STATUS_PRESENTATION[statusKind];
   const collapsedSummary =
     !group.expanded && group.hiddenCount > 0
       ? {
           count: group.hiddenCount,
           attention:
-            group.hiddenAttention === null ? null : STATUS_PRESENTATION[group.hiddenAttention],
+            group.hiddenAttention === null
+              ? null
+              : PROJECT_THREAD_STATUS_PRESENTATION[group.hiddenAttention],
         }
       : null;
   const accessibleLabel = [

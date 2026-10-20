@@ -9,6 +9,19 @@ history, diff, and worktree.
 Each project has at most one project thread. It can steer any thread in its project,
 including threads you started yourself.
 
+## Open a project thread
+
+On web and desktop, open a project's project thread from any of these:
+
+- The project's header in the sidebar; see
+  [Group threads by project](./thread-sidebar.md#group-threads-by-project).
+- The project list on the new-thread screen. Sending from the composer there still
+  starts an ordinary thread.
+- **Open project thread...** in the command palette.
+
+If the project has no project thread yet, opening it creates one. A connection that
+cannot change threads can open an existing project thread but cannot create one.
+
 ## Settings
 
 Open **Settings → General → Project threads**. To change these for one project, pick
