@@ -261,7 +261,7 @@ describe("GitHubLandings", () => {
         defaultBranch: "main",
         since: NOW,
       });
-      assert.isNull(merged.coveredFrom);
+      assert.isNull(merged.incompleteBefore);
       assert.deepStrictEqual(
         merged.pullRequests.map((pull) => [pull.number, pull.repository, pull.mergeCommitSha]),
         shapes.closedPulls.map((pull) => [pull.number, "pingdotgg/t3code", pull.merge_commit_sha]),
@@ -297,7 +297,7 @@ describe("GitHubLandings", () => {
         since: NOW - 30 * 24 * 60 * 60_000,
       });
       assert.strictEqual(merged.pullRequests.length, 300);
-      assert.strictEqual(merged.coveredFrom, NOW - 299 * 60_000);
+      assert.strictEqual(merged.incompleteBefore, NOW - 299 * 60_000);
     }).pipe(Effect.provide(layer));
   });
 
@@ -390,7 +390,6 @@ describe("GitHubLandings", () => {
         repository: upstream,
         previousEnvironment: "prod-eu",
       });
-      // Still deploying is not "no production": the caller keeps last sync's answer.
       assert.deepStrictEqual(production.deployment, { _tag: "Unavailable" });
       assert.strictEqual(
         requests[0]?.url,
@@ -507,10 +506,9 @@ describe("GitHubLandings", () => {
     });
     return Effect.gen(function* () {
       const landings = yield* GitHubLandings.GitHubLandings;
-      const contains = (sha: string) => landings.contains({ repository: fork, sha, headSha });
+      const contains = (sha: string) => landings.headContains({ repository: fork, sha, headSha });
       assert.isTrue(yield* contains(oldestSha));
       assert.isFalse(yield* contains(middleSha));
-      // A commit a force push removed is unknown to GitHub.
       assert.isFalse(yield* contains("0".repeat(40)));
     }).pipe(Effect.provide(layer));
   });

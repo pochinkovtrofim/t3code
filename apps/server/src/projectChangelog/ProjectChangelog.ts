@@ -69,7 +69,6 @@ import {
   nextSyncAt,
   ownerProject,
   type ProductionSignal,
-  type ProductionState,
   type RepositoryKey,
   resolveGitHubRepository,
   selectSummaryBatch,
@@ -90,7 +89,6 @@ const DEFAULT_BACKFILL_MS = 14 * 24 * 60 * 60_000;
 const DEFAULT_MAX_SYNC_COMMITS = 200;
 /** `commits/{sha}/pulls` calls per sync; the rest wait for the next one. */
 const LOOKUP_BUDGET = 30;
-/** First-parent commits a catch-up gathers before it re-reads the window instead. */
 const MAX_CATCH_UP_COMMITS = 1_000;
 const READ_WAIT_MS = 5_000;
 const DEFAULT_READ_LIMIT = 20;
@@ -121,7 +119,6 @@ export class ProjectChangelog extends Context.Service<
     readonly watch: (
       input: ProjectChangelogWatchInput,
     ) => Stream.Stream<ProjectChangelogPage, ProjectChangelogError>;
-    /** Waits until no sync or summary pass is running. Tests await it instead of sleeping. */
     readonly drain: Effect.Effect<void>;
   }
 >()("t3/projectChangelog/ProjectChangelog") {}
@@ -134,12 +131,9 @@ interface RepositoryTarget {
   readonly eligible: ReadonlyArray<OrchestrationProjectShell>;
 }
 
-/** A walk back to the cursor that one sync could not finish; the next sync continues it. */
 interface CatchUp {
   readonly cursorSha: string;
-  /** The head when the catch-up began: the cursor moves there once the walk is done. */
   readonly targetSha: string;
-  /** Oldest first, ending at `targetSha`. */
   readonly chain: ReadonlyArray<LandedCommit>;
   readonly continueAt: string;
 }
@@ -159,10 +153,6 @@ const AVAILABILITY = {
 
 const isoOf = (millis: number) => DateTime.formatIso(DateTime.makeUnsafe(millis));
 
-/**
- * The last entry of the page before, by position and key. A reset renumbers positions, so a
- * cursor counts only while that entry is still live at that position.
- */
 function encodeCursor(unit: Pick<ChangeUnit, "lastOrdinal" | "key">): ProjectChangelogCursor {
   return ProjectChangelogCursor.make(`o${unit.lastOrdinal}.${unit.key}`);
 }
@@ -174,11 +164,18 @@ function decodeCursor(
   return match === null ? null : { lastOrdinal: Number(match[1]), key: match[2]! };
 }
 
-/** A defect while reading or applying a sync, kept so the page says the sync failed. */
 interface SyncCrash {
   readonly _tag: "SyncCrash";
   readonly defect: unknown;
 }
+
+const withoutKey =
+  (key: RepositoryKey) =>
+  <V>(map: ReadonlyMap<RepositoryKey, V>): ReadonlyMap<RepositoryKey, V> => {
+    const next = new Map(map);
+    next.delete(key);
+    return next;
+  };
 
 function lastAttemptAt(sync: ChangelogStore.RepositorySyncStatus): number | null {
   return sync._tag === "NeverSynced" ? null : sync.at;
@@ -261,7 +258,6 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
   const watchers = yield* Ref.make<ReadonlyMap<RepositoryKey, number>>(new Map());
   const targets = yield* Ref.make<ReadonlyMap<RepositoryKey, RepositoryTarget>>(new Map());
   const catchUps = yield* Ref.make<ReadonlyMap<RepositoryKey, CatchUp>>(new Map());
-  /** Repositories whose last model calls failed outright, and how many in a row. */
   const summaryHolds = yield* Ref.make<
     ReadonlyMap<RepositoryKey, { readonly until: number; readonly failures: number }>
   >(new Map());
@@ -283,7 +279,6 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
   const projectThreadsEnabled = (settings: ServerSettingsValue, shell: OrchestrationProjectShell) =>
     resolveProjectSettings(settings, shell.id, shell).settings.projectThreadsEnabled;
 
-  /** Background work runs for a project with project threads on and a project thread. */
   const eligibleProjects = Effect.fn("ProjectChangelog.eligibleProjects")(function* (
     shells: ReadonlyArray<OrchestrationProjectShell>,
   ) {
@@ -298,7 +293,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
   });
 
   // The shell's identity comes from a cache that is empty right after startup.
-  const identityOf = (shell: OrchestrationProjectShell) =>
+  const resolveIdentity = (shell: OrchestrationProjectShell) =>
     shell.repositoryIdentity === null
       ? identities.resolve(shell.workspaceRoot)
       : Effect.succeed(shell.repositoryIdentity);
@@ -318,9 +313,10 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     >();
     for (const shell of shells) {
       const eligible = eligibleIds.has(shell.id);
-      // Resolving an uncached identity can spawn git; only eligible projects pay for it.
-      if (!eligible && shell.repositoryIdentity === null) continue;
-      const resolution = resolveGitHubRepository(yield* identityOf(shell));
+      // Resolving an uncached identity spawns git; only eligible projects pay for it.
+      const resolution = resolveGitHubRepository(
+        eligible ? yield* resolveIdentity(shell) : shell.repositoryIdentity,
+      );
       if (resolution._tag !== "GitHub") continue;
       const target = byKey.get(resolution.repository.key) ?? {
         repository: resolution.repository,
@@ -343,7 +339,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     if (!projectThreadsEnabled(settings, shell.value)) {
       return { _tag: "Disabled" } satisfies ProjectTarget;
     }
-    const resolution = resolveGitHubRepository(yield* identityOf(shell.value));
+    const resolution = resolveGitHubRepository(yield* resolveIdentity(shell.value));
     if (resolution._tag !== "GitHub") return resolution satisfies ProjectTarget;
     const known = (yield* Ref.get(targets)).get(resolution.repository.key);
     const eligible =
@@ -356,11 +352,6 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     } satisfies ProjectTarget;
   });
 
-  /**
-   * The first-parent commits after the cursor, oldest first, and the head they reach. Missing
-   * the cursor resets only when the head no longer contains it: a merge can bring the cursor in
-   * as a second parent, and more can land than one sync reads.
-   */
   const readNewHistory = Effect.fn("ProjectChangelog.readNewHistory")(function* (
     repository: GitHubRepository,
     cursorSha: string,
@@ -369,11 +360,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     const key = repository.key;
     const saved = (yield* Ref.get(catchUps)).get(key);
     const resumed = saved?.cursorSha === cursorSha ? saved : undefined;
-    yield* Ref.update(catchUps, (all) => {
-      const next = new Map(all);
-      next.delete(key);
-      return next;
-    });
+    yield* Ref.update(catchUps, withoutKey(key));
     const target = resumed?.targetSha ?? headSha;
     const history = yield* github.readHistory({
       repository,
@@ -384,7 +371,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     });
     const chain = [...history.chain, ...(resumed?.chain ?? [])];
     if (history.reachedCursor) return { _tag: "Append", chain, reached: target } as const;
-    if (!(yield* github.contains({ repository, sha: cursorSha, headSha: target }))) {
+    if (!(yield* github.headContains({ repository, sha: cursorSha, headSha: target }))) {
       return { _tag: "Reset" } as const;
     }
     const newestKnown = yield* Effect.findFirst(chain.toReversed(), (commit) =>
@@ -431,7 +418,6 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     let reset = false;
     let base = cursor?.headOrdinal ?? 0;
     let fresh: ReadonlyArray<LandedCommit> = [];
-    /** The head the stored history reaches once this sync is written. */
     let reached = head.headSha;
     let catchingUp = false;
     if (cursor === null) {
@@ -442,7 +428,6 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     } else if (cursor.headSha !== head.headSha) {
       const next = yield* readNewHistory(repository, cursor.headSha, head.headSha);
       if (next._tag === "Reset") {
-        // Re-ingested entries come back with their summaries by key.
         reset = true;
       } else if (next._tag === "CatchingUp") {
         catchingUp = true;
@@ -501,35 +486,35 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
         })),
       ),
     ];
-    // Ordinals in the numbering this sync leaves behind: a reset renumbers everything.
     const ordinals = new Map(landings.map((landing) => [landing.sha, landing.ordinal]));
-    const ordinalOf = (sha: string) => {
+    const ordinalAfterSync = (sha: string) => {
       const known = ordinals.get(sha);
       return known !== undefined || reset
         ? Effect.succeed(known ?? null)
         : store.ordinalOf(key, sha);
     };
-    const watermarkOf = Effect.fnUntraced(function* (sha: string) {
-      const onChain = yield* ordinalOf(sha);
+    const watermarkOf = Effect.fn("ProjectChangelog.watermarkOf")(function* (sha: string) {
+      const onChain = yield* ordinalAfterSync(sha);
       if (onChain !== null) return onChain;
       // Deployed from a release branch or a PR branch: what it shares with the default branch.
-      const base = yield* github.mergeBase({ repository, sha, headSha: reached });
-      return base === null ? null : yield* ordinalOf(base);
+      const shared = yield* github.mergeBase({ repository, sha, headSha: reached });
+      return shared === null ? null : yield* ordinalAfterSync(shared);
     });
     const previous = row.production;
     const headMoved = reset || cursor?.headSha !== reached;
-    const productionOf = Effect.fnUntraced(function* (signal: ProductionSignal, stale: boolean) {
+    const productionOf = Effect.fn("ProjectChangelog.productionOf")(function* (
+      signal: ProductionSignal,
+      stale: boolean,
+    ) {
       if (signal.source === "default-branch") return { signal, watermark: "head" as const, stale };
-      // Reused only while nothing could move it: a reset renumbers, and a sha off the default
-      // branch can meet it somewhere new once the head moves.
-      const unchanged =
+      const watermarkStillHolds =
         !headMoved &&
         previous !== null &&
         "sha" in previous.signal &&
         previous.signal.sha === signal.sha;
       return {
         signal,
-        watermark: unchanged ? previous.watermark : yield* watermarkOf(signal.sha),
+        watermark: watermarkStillHolds ? previous.watermark : yield* watermarkOf(signal.sha),
         stale,
       };
     });
@@ -546,9 +531,9 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
         ? yield* productionOf(previous!.signal, true)
         : yield* productionOf(choice, false);
 
+    const behind = catchingUp || reached !== head.headSha;
     // A first sync with nothing in the window still records the head, or every later sync
     // would read the history again.
-    const behind = catchingUp || reached !== head.headSha;
     if (!reset && cursor !== null && landings.length === 0) {
       yield* store.setProduction(key, production);
       return { backlog: behind };
@@ -665,7 +650,6 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       const heldUntil = (yield* Ref.get(summaryHolds)).get(key)?.until ?? 0;
       if (heldUntil > (yield* Clock.currentTimeMillis)) return;
       for (;;) {
-        // A backlog can outlast the settings and project threads it started under.
         const { settings, eligible } = yield* eligibleProjects(target.projects);
         const owner = ownerProject(eligible);
         if (owner === null) return;
@@ -701,15 +685,10 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
             repository: key,
             detail: generated.failure.detail,
           });
-          // The provider failed, not the entries: hold the repository and spend no attempts.
           yield* holdSummaries(key, now);
           return;
         }
-        yield* Ref.update(summaryHolds, (holds) => {
-          const next = new Map(holds);
-          next.delete(key);
-          return next;
-        });
+        yield* Ref.update(summaryHolds, withoutKey(key));
         const answers = new Map(generated.success.entries.map((answer) => [answer.key, answer]));
         const contested = new Set(generated.success.contested);
         yield* store.writeSummaries({
@@ -757,7 +736,6 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
             errorTag: error._tag,
           }),
         ),
-        // Held like a failed call, so a defect that repeats does not rerun the model every tick.
         Effect.catchDefect((defect) =>
           Effect.logError("project changelog summaries crashed", {
             repository: target.repository.key,
@@ -769,6 +747,14 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
         ),
       ),
   );
+
+  const startSummaryPassThenAnnounceSync = (target: RepositoryTarget) =>
+    FiberMap.run(summaryPasses, target.repository.key, summarizeRepository(target), {
+      onlyIfMissing: true,
+    }).pipe(
+      Effect.andThen(publishChange(target.repository.key)),
+      Effect.andThen(PubSub.publish(syncsDone, target.repository.key)),
+    );
 
   const syncRepository = Effect.fn("ProjectChangelog.syncRepository")(
     function* (target: RepositoryTarget) {
@@ -818,23 +804,13 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
             errorTag: error._tag,
           }),
         ),
-        // Nothing joins these fibers, so a defect would end them without a trace.
         Effect.catchDefect((defect) =>
           Effect.logError("project changelog sync crashed", {
             repository: target.repository.key,
             defect,
           }),
         ),
-        // The summary pass is registered before readers hear the sync finished, so a drain
-        // that follows a read also waits for it.
-        Effect.ensuring(
-          FiberMap.run(summaryPasses, target.repository.key, summarizeRepository(target), {
-            onlyIfMissing: true,
-          }).pipe(
-            Effect.andThen(publishChange(target.repository.key)),
-            Effect.andThen(PubSub.publish(syncsDone, target.repository.key)),
-          ),
-        ),
+        Effect.ensuring(startSummaryPassThenAnnounceSync(target)),
       ),
   );
 
@@ -844,16 +820,14 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     const current = yield* listTargets();
     yield* Ref.set(targets, current);
     const asked = yield* Ref.getAndSet(nudged, new Set());
-    // A repository that lost its last eligible project stops now, mid-read or mid-call.
     const eligibleKeys = new Set(
       [...current.values()]
         .filter((target) => target.eligible.length > 0)
         .map((target) => target.repository.key),
     );
     for (const fibers of [syncs, summaryPasses]) {
-      for (const [key] of [...fibers]) {
-        if (!eligibleKeys.has(key)) yield* FiberMap.remove(fibers, key);
-      }
+      const dropped = Array.from(fibers, ([key]) => key).filter((key) => !eligibleKeys.has(key));
+      yield* Effect.forEach(dropped, (key) => FiberMap.remove(fibers, key), { discard: true });
     }
     let wakeAt = now + MAX_TICK_MS;
     for (const target of current.values()) {
@@ -867,7 +841,6 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
           ? Math.max(Math.min(row.nextSyncAt, attempted + ACTIVE_SYNC_INTERVAL_MS), retryAt)
           : row.nextSyncAt;
       if (asked.has(key) || dueAt <= now) {
-        // The sync starts the summary pass once it has applied what it read.
         yield* FiberMap.run(syncs, key, syncRepository(target), { onlyIfMissing: true });
         yield* publishChange(key);
         continue;
@@ -1041,6 +1014,16 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     );
   }, Effect.scoped);
 
+  const ordinalOfLiveCursor = Effect.fn("ProjectChangelog.ordinalOfLiveCursor")(function* (
+    key: RepositoryKey,
+    text: string | undefined,
+  ) {
+    const cursor = decodeCursor(text);
+    if (cursor === null) return null;
+    const boundary = yield* store.unitEndingAt(key, cursor.lastOrdinal);
+    return boundary?.key === cursor.key ? cursor.lastOrdinal : null;
+  });
+
   const readTarget = Effect.fn("ProjectChangelog.readTarget")(function* (
     input: ProjectChangelogReadInput,
     readOptions: { readonly waitForSync: boolean },
@@ -1074,13 +1057,9 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       row = Option.getOrElse(yield* store.getRepository(key), () => row);
     }
     const limit = input.limit ?? DEFAULT_READ_LIMIT;
-    // A cursor this server did not issue, or one that outlived its history, reads from the head.
-    const cursor = decodeCursor(input.cursor);
-    const boundary = cursor === null ? null : yield* store.unitEndingAt(key, cursor.lastOrdinal);
     const entries = yield* store.page({
       key,
-      beforeOrdinal:
-        boundary !== null && boundary.key === cursor?.key ? boundary.lastOrdinal : null,
+      beforeOrdinal: yield* ordinalOfLiveCursor(key, input.cursor),
       limit: limit + 1,
     });
     const syncing = yield* FiberMap.has(syncs, key);
@@ -1117,8 +1096,6 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
         const changed = yield* PubSub.subscribe(changes);
         const settingsChanged = yield* serverSettings.subscribeChanges;
         const leased = yield* Ref.make<RepositoryKey | null>(null);
-        // Followed even before background work runs for it, so the watch hears the first sync
-        // once a project thread makes the project eligible.
         const watched = yield* Ref.make<RepositoryKey | null>(null);
         const lease = (next: RepositoryKey | null) =>
           Ref.getAndSet(leased, next).pipe(

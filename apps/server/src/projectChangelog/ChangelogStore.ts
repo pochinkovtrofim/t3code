@@ -244,7 +244,6 @@ export interface SyncWrite {
    * shown until the new one lands.
    */
   readonly units: ReadonlyArray<ChangeUnit>;
-  /** Written with the history its watermark numbers, so the two never disagree. */
   readonly production: ProductionState;
   readonly now: number;
 }
@@ -271,15 +270,11 @@ export class ChangelogStore extends Context.Service<
     readonly getRepository: (
       key: RepositoryKey,
     ) => Effect.Effect<Option.Option<RepositoryRow>, ChangelogStoreError>;
-    /** The live unit whose last commit has this ordinal, which the next landing may extend. */
     readonly unitEndingAt: (
       key: RepositoryKey,
       lastOrdinal: number,
     ) => Effect.Effect<ChangeUnit | null, ChangelogStoreError>;
-    /**
-     * Commits in no unit yet, oldest first: unresolved ones and the unit directly above each,
-     * which grouping deferred. Parents are not stored.
-     */
+    /** Commits in no unit yet, oldest first. Parents are not stored. */
     readonly ungroupedCommits: (
       key: RepositoryKey,
     ) => Effect.Effect<ReadonlyArray<Landing>, ChangelogStoreError>;
@@ -486,7 +481,7 @@ const make = Effect.gen(function* () {
     "ChangelogStore.ensureRepository",
   )(
     function* (repository) {
-      // Called on every pass, read and watch emission: write only what changed.
+      // Runs on every pass, read and watch emission.
       const [existing] = yield* selectRepository(repository.key);
       if (
         existing !== undefined &&

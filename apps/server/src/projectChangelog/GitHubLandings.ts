@@ -37,17 +37,14 @@ const PULL_PAGE_SIZE = 100;
 const MAX_PULL_PAGES = 3;
 /** The merged-PR list is sorted by update time, so it reads a little past the oldest commit. */
 const PULL_LIST_SLACK_MS = 24 * 60 * 60_000;
-/** Deployments per environment whose latest status is read, newest first. */
 const DEPLOYMENT_CANDIDATES = 5;
-/** Environment-filtered deployment reads per sync. */
 const MAX_ENVIRONMENT_QUERIES = 3;
-/** Asked when no recent deployment names a production environment. */
 const PRODUCTION_ENVIRONMENT_NAMES = ["production", "Production"];
 const CACHED_ANSWERS_PER_OPERATION = 256;
 const LOOKUP_CONCURRENCY = 4;
 const SHA_ACCEPT = "application/vnd.github.sha";
-// GitHub text has no useful bound (a commit's first line can be a megabyte), and it reaches
-// every page, watch and MCP answer, so it is cut before storage.
+// GitHub text has no useful bound (a commit's first line can be a megabyte) and reaches every
+// page, watch and MCP answer.
 const MAX_SUBJECT_CHARS = 200;
 const MAX_PULL_TITLE_CHARS = 256;
 const MAX_AUTHOR_CHARS = 100;
@@ -95,7 +92,6 @@ export class GitHubLandings extends Context.Service<
       { readonly chain: ReadonlyArray<LandedCommit>; readonly reachedCursor: boolean },
       GitHubLandingsError
     >;
-    /** Pull requests merged into `defaultBranch`, read back to about `since` or a page budget. */
     readonly readMergedPulls: (input: {
       readonly repository: GitHubRepository;
       readonly defaultBranch: string;
@@ -114,7 +110,7 @@ export class GitHubLandings extends Context.Service<
      * What each production source says, strongest first, stopping at the first one found: the
      * newest production deployment whose latest status is success, `releases/latest` (GitHub's
      * own non-draft, non-prerelease latest), then the highest tag. A source that could not be
-     * read is Unavailable, never a failed sync. `previousEnvironment` is asked first.
+     * read is Unavailable, never a failed sync.
      */
     readonly readProduction: (input: {
       readonly repository: GitHubRepository;
@@ -126,8 +122,7 @@ export class GitHubLandings extends Context.Service<
       readonly sha: string;
       readonly headSha: string;
     }) => Effect.Effect<string | null, GitHubLandingsError>;
-    /** Whether `headSha` still contains `sha`; false after a force push removed it. */
-    readonly contains: (input: {
+    readonly headContains: (input: {
       readonly repository: GitHubRepository;
       readonly sha: string;
       readonly headSha: string;
@@ -199,7 +194,6 @@ const RestCompare = Schema.Struct({
   merge_base_commit: Schema.Struct({ sha: Schema.String }),
 });
 
-/** Trimmed and cut to `maxChars`; null when nothing is left, so a blank name falls through. */
 function bounded(text: string | null | undefined, maxChars: number): string | null {
   const value = (text ?? "").trim().slice(0, maxChars).trimEnd();
   return value === "" ? null : value;
@@ -422,7 +416,7 @@ const make = Effect.gen(function* () {
     "GitHubLandings.readMergedPulls",
   )(function* (input) {
     const merged: Array<MergedPullRequest> = [];
-    let coveredFrom: number | null = null;
+    let incompleteBefore: number | null = null;
     for (let page = 1; page <= MAX_PULL_PAGES; page++) {
       const answer = yield* getClosedPulls(
         input.repository,
@@ -437,12 +431,12 @@ const make = Effect.gen(function* () {
         answer.oldestUpdatedAt === null ||
         answer.oldestUpdatedAt < input.since - PULL_LIST_SLACK_MS
       ) {
-        return { pullRequests: merged, coveredFrom: null };
+        return { pullRequests: merged, incompleteBefore: null };
       }
       // Sorted by update time, and a merge updates a pull request: none merged since is missing.
-      coveredFrom = answer.oldestUpdatedAt;
+      incompleteBefore = answer.oldestUpdatedAt;
     }
-    return { pullRequests: merged, coveredFrom };
+    return { pullRequests: merged, incompleteBefore };
   });
 
   const lookupCommitPulls: GitHubLandings["Service"]["lookupCommitPulls"] = Effect.fn(
@@ -472,7 +466,6 @@ const make = Effect.gen(function* () {
     return lookups;
   });
 
-  /** The newest successful deployment to one environment, if it has any deployments. */
   const observeEnvironment = Effect.fnUntraced(function* (
     repository: GitHubRepository,
     environment: string,
@@ -510,34 +503,31 @@ const make = Effect.gen(function* () {
     repository: GitHubRepository,
     previousEnvironment: string | null,
   ) {
-    const candidates = previousEnvironment === null ? [] : [previousEnvironment];
-    let discovered = false;
     let deploying = false;
-    for (let asked = 0; asked < MAX_ENVIRONMENT_QUERIES; asked++) {
-      if (asked === candidates.length && !discovered) {
-        discovered = true;
-        const newest = yield* getDeployments(
-          repository,
-          repoPath(repository, "deployments?per_page=30"),
-        );
-        if (!newest.any && !deploying) return { _tag: "Absent" } as const;
-        for (const name of [
-          ...newest.production.map((deployment) => deployment.environment),
-          ...PRODUCTION_ENVIRONMENT_NAMES,
-        ]) {
-          if (!candidates.includes(name)) candidates.push(name);
-        }
-      }
-      const environment = candidates[asked];
-      if (environment === undefined) break;
+    if (previousEnvironment !== null) {
+      const answer = yield* observeEnvironment(repository, previousEnvironment);
+      if (answer._tag === "Found") return answer;
+      deploying = answer._tag === "NoSuccess";
+    }
+    const newest = yield* getDeployments(
+      repository,
+      repoPath(repository, "deployments?per_page=30"),
+    );
+    if (!newest.any && !deploying) return { _tag: "Absent" } as const;
+    const others = [
+      ...new Set([
+        ...newest.production.map((deployment) => deployment.environment),
+        ...PRODUCTION_ENVIRONMENT_NAMES,
+      ]),
+    ].filter((name) => name !== previousEnvironment);
+    const budget = MAX_ENVIRONMENT_QUERIES - (previousEnvironment === null ? 0 : 1);
+    for (const environment of others.slice(0, budget)) {
       const answer = yield* observeEnvironment(repository, environment);
       if (answer._tag === "Found") return answer;
       if (answer._tag === "NoSuccess") deploying = true;
     }
-    // Production deployments that are all still running or failed are no answer yet, and
-    // neither is a search that ran out before it could rule out last sync's environment.
-    return deploying ||
-      (previousEnvironment !== null && candidates.length > MAX_ENVIRONMENT_QUERIES)
+    const searchRanOut = previousEnvironment !== null && others.length > budget;
+    return deploying || searchRanOut
       ? ({ _tag: "Unavailable" } as const)
       : ({ _tag: "Absent" } as const);
   });
@@ -603,15 +593,15 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const contains: GitHubLandings["Service"]["contains"] = Effect.fn("GitHubLandings.contains")(
-    function* (input) {
-      return yield* compare(input.repository, input.sha, input.headSha).pipe(
-        Effect.map((answer) => answer.status === "ahead" || answer.status === "identical"),
-        // GitHub no longer knows a commit a force push removed.
-        Effect.catchTags({ GitHubApiNotFoundError: () => Effect.succeed(false) }),
-      );
-    },
-  );
+  const headContains: GitHubLandings["Service"]["headContains"] = Effect.fn(
+    "GitHubLandings.headContains",
+  )(function* (input) {
+    return yield* compare(input.repository, input.sha, input.headSha).pipe(
+      Effect.map((answer) => answer.status === "ahead" || answer.status === "identical"),
+      // GitHub no longer knows a commit a force push removed.
+      Effect.catchTags({ GitHubApiNotFoundError: () => Effect.succeed(false) }),
+    );
+  });
 
   return GitHubLandings.of({
     readHead,
@@ -620,7 +610,7 @@ const make = Effect.gen(function* () {
     lookupCommitPulls,
     readProduction,
     mergeBase,
-    contains,
+    headContains,
   });
 });
 

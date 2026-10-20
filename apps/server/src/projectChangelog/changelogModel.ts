@@ -97,18 +97,13 @@ export interface MergedPullRequest {
 
 export const PULL_REQUEST_BODY_EXCERPT_CHARS = 1_500;
 
-/** Pull requests merged into the default branch, newest first, as far back as one read went. */
 export interface MergedPullList {
   readonly pullRequests: ReadonlyArray<MergedPullRequest>;
-  /**
-   * Every pull request merged since this time is in the list; null when the list reaches past
-   * every commit it was read for. The read stops after a few pages on a busy repository.
-   */
-  readonly coveredFrom: number | null;
+  readonly incompleteBefore: number | null;
 }
 
 const isCovered = (list: MergedPullList, commit: Pick<LandedCommit, "committedAt">) =>
-  list.coveredFrom === null || commit.committedAt >= list.coveredFrom;
+  list.incompleteBefore === null || commit.committedAt >= list.incompleteBefore;
 
 /** How a first-parent commit reached the default branch. */
 export type CommitAssociation =
@@ -201,10 +196,6 @@ function mergedPullsBySha(
   return bySha;
 }
 
-/**
- * The commits worth a `commits/{sha}/pulls` call: not matched by the merged-PR list and inside
- * its coverage, newest first so the head of the changelog resolves first, at most `budget`.
- */
 export function commitsNeedingLookup(input: {
   readonly commits: ReadonlyArray<Pick<LandedCommit, "sha" | "committedAt">>;
   readonly mergedPulls: MergedPullList;
@@ -221,8 +212,7 @@ export function commitsNeedingLookup(input: {
 /**
  * Matches each commit to the pull request that landed it. The merged-PR list catches squash and
  * merge commits through `mergeCommitSha`; `lookups` holds per-commit answers for the rest
- * (rebase merges, a fork's commits from its parent). A commit older than the list's coverage
- * that the list does not hold counts as a direct push without a lookup.
+ * (rebase merges, a fork's commits from its parent).
  */
 export function associateLandings(input: {
   readonly commits: ReadonlyArray<LandedCommit>;
@@ -472,7 +462,6 @@ export function groupChangeUnits(input: {
   readonly repository: GitHubRepository;
   readonly below: ReadonlyArray<ChangeUnit>;
   readonly landings: ReadonlyArray<Landing>;
-  /** The newest ordinal on record when it lies above every landing: the last unit is closed. */
   readonly headOrdinal?: number;
 }): { readonly units: ReadonlyArray<ChangeUnit>; readonly deferred: ReadonlyArray<Landing> } {
   const belowByEnd = new Map(input.below.map((unit) => [unit.lastOrdinal, unit]));
@@ -511,7 +500,9 @@ export function groupChangeUnits(input: {
     open = { unit: startUnit(input.repository, landing), held: afterHole ? [landing] : null };
     afterHole = false;
   }
-  close(previous !== null && previous.ordinal < (input.headOrdinal ?? previous.ordinal));
+  close(
+    input.headOrdinal !== undefined && previous !== null && previous.ordinal < input.headOrdinal,
+  );
   return { units, deferred };
 }
 
@@ -707,10 +698,7 @@ export const SUMMARY_BATCH_PROMPT_BYTES = 32_000;
 export const SUMMARY_MAX_ATTEMPTS = 3;
 const SUMMARY_RETRY_DELAYS_MS = [5 * 60_000, 30 * 60_000] as const;
 
-/**
- * Where a failed summary goes next: retried after a backoff, or given up on at the cap. An
- * uncharged failure (the model answered the entry twice) backs off without spending an attempt.
- */
+/** Where a failed summary goes next: retried after a backoff, or given up on at the cap. */
 export function summaryAfterFailure(input: {
   readonly attempts: number;
   readonly now: number;
@@ -730,10 +718,6 @@ export function summaryAfterFailure(input: {
 const SUMMARY_HOLD_MS = 5 * 60_000;
 const MAX_SUMMARY_HOLD_MS = 60 * 60_000;
 
-/**
- * When a repository's summaries may call the model again after `failures` whole calls failed in a
- * row (provider down, signed out): five minutes, doubling up to an hour.
- */
 export function summaryHoldUntil(input: { readonly failures: number; readonly now: number }) {
   return input.now + Math.min(SUMMARY_HOLD_MS * 2 ** (input.failures - 1), MAX_SUMMARY_HOLD_MS);
 }

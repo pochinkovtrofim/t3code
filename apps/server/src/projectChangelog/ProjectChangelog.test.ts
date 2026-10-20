@@ -31,6 +31,7 @@ import {
   firstParentChain,
   type LandedCommit,
   type MergedPullRequest,
+  SUMMARY_BATCH_UNITS,
 } from "./changelogModel.ts";
 import * as GitHubLandings from "./GitHubLandings.ts";
 import * as ProjectChangelog from "./ProjectChangelog.ts";
@@ -109,10 +110,8 @@ function makeGitHub() {
     calls: [] as Array<string>,
     previousEnvironments: [] as Array<string | null>,
     mergeBases: new Map<string, string>(),
-    pullsCoveredFrom: null as number | null,
-    /** Holds every head read until released, so a test can act while a sync is in flight. */
+    pullsIncompleteBefore: null as number | null,
     headGate: null as Gate | null,
-    /** Head reads left that die, as a bug in reading or applying a sync would. */
     headDefects: 0,
   };
   const layer = Layer.succeed(
@@ -149,7 +148,7 @@ function makeGitHub() {
       readMergedPulls: () =>
         Effect.sync(() => {
           state.calls.push("readMergedPulls");
-          return { pullRequests: state.pulls, coveredFrom: state.pullsCoveredFrom };
+          return { pullRequests: state.pulls, incompleteBefore: state.pullsIncompleteBefore };
         }),
       lookupCommitPulls: (input) =>
         Effect.sync(() => {
@@ -168,7 +167,7 @@ function makeGitHub() {
           return state.production;
         }),
       mergeBase: (input) => Effect.succeed(state.mergeBases.get(input.sha) ?? null),
-      contains: (input) =>
+      headContains: (input) =>
         Effect.sync(() => {
           state.calls.push("contains");
           const bySha = new Map(state.commits.map((value) => [value.sha, value]));
@@ -187,18 +186,18 @@ function makeGitHub() {
   return { state, layer };
 }
 
+const suspendLikeASubprocess = Effect.yieldNow;
+
 function makeModel() {
   const calls: Array<ChangelogSummaryGenerationInput> = [];
   const state = {
     failure: null as "fails" | "dies" | null,
     contested: new Set<string>(),
-    /** Holds every call until released, so a test can act while one is in flight. */
     gate: null as Gate | null,
   };
   const layer = Layer.mock(TextGeneration.TextGeneration)({
     generateChangelogSummaries: (input) =>
-      // A real call suspends on a subprocess; yielding keeps the pass from finishing inside the sync.
-      Effect.yieldNow.pipe(
+      suspendLikeASubprocess.pipe(
         Effect.andThen(() => {
           calls.push(input);
           return state.gate === null
@@ -252,7 +251,6 @@ function harness(
   const github = makeGitHub();
   const model = makeModel();
   const projects = options.projects ?? [shell("p1")];
-  /** Calls left that die, as a bug behind the project service would. */
   const crashes = { listShells: 0, getShell: 0 };
   const resolved: Array<string> = [];
   const crashOnce = (name: keyof typeof crashes) =>
@@ -334,7 +332,6 @@ const insertThread = (input: {
     `;
   });
 
-/** Takes pages off a watch until one satisfies `done`; each take waits for the next emission. */
 const takeUntil = (
   pages: Queue.Queue<ProjectChangelogPage>,
   done: (page: ProjectChangelogPage) => boolean,
@@ -432,7 +429,6 @@ describe("ProjectChangelog", () => {
         yield* changelog.read({ projectId: p1 });
         yield* changelog.drain;
         assert.strictEqual(model.calls.length, 1);
-        // The loop passes every minute; none of them calls the failing model again yet.
         yield* TestClock.adjust(3 * MINUTE);
         assert.strictEqual(model.calls.length, 1);
         const pending = yield* changelog.read({ projectId: p1 });
@@ -458,7 +454,6 @@ describe("ProjectChangelog", () => {
       yield* changelog.read({ projectId: p1 });
       yield* TestClock.adjust(40 * MINUTE);
       yield* changelog.drain;
-      // The hold grows with each failed call, so forty minutes cost a handful of calls.
       assert.isAtMost(model.calls.length, 4);
       const during = yield* changelog.read({ projectId: p1 });
       assert.isTrue(during.entries.every((entry) => entry.summaryState === "pending"));
@@ -496,7 +491,6 @@ describe("ProjectChangelog", () => {
       const changelog = yield* ProjectChangelog.ProjectChangelog;
       yield* changelog.read({ projectId: p1 });
       yield* changelog.drain;
-      // Three charged failures would give up by now; contested answers spend no attempt.
       yield* TestClock.adjust(6 * MINUTE);
       yield* TestClock.adjust(31 * MINUTE);
       yield* changelog.drain;
@@ -526,8 +520,6 @@ describe("ProjectChangelog", () => {
         blocked.entries.map((entry) => entry.id),
         ["pr:7", "push:c1"],
       );
-      // Waiting commits put the repository on the one-minute cadence: two more syncs, two more
-      // failed lookups, and the commit counts as a direct push.
       yield* TestClock.adjust(MINUTE);
       yield* TestClock.adjust(MINUTE);
       yield* changelog.drain;
@@ -559,7 +551,6 @@ describe("ProjectChangelog", () => {
 
   it.effect("keeps the background loop running after a pass crashes", () => {
     const { github, crashes, layer } = harness();
-    // The loop's first pass runs as the layer starts.
     crashes.listShells = 1;
     return Effect.gen(function* () {
       yield* insertThread({ id: "project-thread:one", project: "p1" });
@@ -584,7 +575,6 @@ describe("ProjectChangelog", () => {
       github.state.headGate = gate;
       yield* PubSub.publish(merges, merge);
       yield* PubSub.publish(merges, merge);
-      // The second merge still reaches the loop, which starts a sync.
       yield* Deferred.await(gate.entered);
       yield* Deferred.succeed(gate.release, undefined);
       yield* changelog.drain;
@@ -599,7 +589,6 @@ describe("ProjectChangelog", () => {
       yield* insertThread({ id: "project-thread:one", project: "p1" });
       const changelog = yield* ProjectChangelog.ProjectChangelog;
       const page = yield* changelog.read({ projectId: p1 });
-      // #8 sits right on the waiting commit, so it waits too; everything above it shows.
       assert.deepStrictEqual(
         page.entries.map((entry) => entry.id),
         ["push:c5", "pr:7", "push:c1"],
@@ -647,8 +636,6 @@ describe("ProjectChangelog", () => {
       const changelog = yield* ProjectChangelog.ProjectChangelog;
       yield* changelog.read({ projectId: p1 });
 
-      // Someone committed on an old main and pulled before pushing: the old head is the merge's
-      // second parent, so the first-parent walk never meets it.
       github.state.commits.push(commit("l1", "c3", NOW - 20 * MINUTE, "dave", "Local fix"), {
         ...commit("m1", "l1", NOW - 10 * MINUTE, "dave", "Merge branch 'main'"),
         parentShas: ["l1", "c4"],
@@ -690,7 +677,6 @@ describe("ProjectChangelog", () => {
         during.entries.map((entry) => entry.id),
         ["pr:8", "push:c3"],
       );
-      // Waiting history puts the repository on the one-minute cadence until it is read.
       yield* TestClock.adjust(MINUTE);
       yield* TestClock.adjust(MINUTE);
       yield* changelog.drain;
@@ -713,7 +699,6 @@ describe("ProjectChangelog", () => {
         [false, false, true, true],
       );
 
-      // The release's commit is gone from the rewritten history, and releases cannot be read.
       github.state.commits = [
         commit("x1", null, NOW - 50 * MINUTE, "alice", "Start over"),
         commit("x2", "x1", NOW - 40 * MINUTE, "alice", "Add search"),
@@ -733,7 +718,6 @@ describe("ProjectChangelog", () => {
       assert.isTrue(rewritten.entries.every((entry) => !entry.inProduction));
       assert.isTrue(rewritten.production?.stale);
 
-      // The release comes back unchanged: still not on the rewritten history.
       github.state.production = {
         deployment: { _tag: "Absent" },
         release: {
@@ -751,7 +735,6 @@ describe("ProjectChangelog", () => {
 
   it.effect("moves production when the default branch catches up with a deployed branch", () => {
     const { github, layer } = harness();
-    // Deployed from a branch that forked from main at c3.
     github.state.mergeBases.set("b1", "c3");
     github.state.production = {
       deployment: {
@@ -782,7 +765,6 @@ describe("ProjectChangelog", () => {
         ],
       );
 
-      // main fast-forwards to the deployed commit.
       github.state.commits.push(commit("b1", "c4", NOW - 20 * MINUTE, "dave", "Hotfix"));
       yield* TestClock.adjust(16 * MINUTE);
       const after = yield* changelog.read({ projectId: p1 });
@@ -828,8 +810,7 @@ describe("ProjectChangelog", () => {
 
   it.effect("stops a summary backlog once project threads are turned off", () => {
     const { github, model, layer } = harness();
-    // Fourteen authors, fourteen entries: more than one model call's batch.
-    github.state.commits = Array.from({ length: 14 }, (_, index) =>
+    github.state.commits = Array.from({ length: SUMMARY_BATCH_UNITS + 2 }, (_, index) =>
       commit(
         `d${index}`,
         index === 0 ? null : `d${index - 1}`,
@@ -851,7 +832,6 @@ describe("ProjectChangelog", () => {
       yield* settings.updateSettings({ projectThreadsEnabled: false });
       yield* Deferred.succeed(gate.release, undefined);
       yield* changelog.drain;
-      // The batch in flight finishes; the next one is never asked for.
       assert.strictEqual(model.calls.length, 1);
     }).pipe(Effect.provide(layer), atNow);
   });
@@ -868,8 +848,6 @@ describe("ProjectChangelog", () => {
       yield* Deferred.await(gate.entered);
 
       yield* settings.updateSettings({ projectThreadsEnabled: false });
-      // The next pass of the loop sees the project is no longer eligible. The gate is never
-      // released, so the drain returns only because the call was interrupted.
       yield* TestClock.adjust(MINUTE);
       yield* changelog.drain;
       assert.strictEqual(model.calls.length, 1);
@@ -1088,7 +1066,6 @@ describe("ProjectChangelog", () => {
       yield* insertThread({ id: "project-thread:one", project: "p1" });
       yield* TestClock.adjust(MINUTE);
       yield* takeUntil(pages, (page) => page.entries.length === 4);
-      // Now eligible, the open watch puts the repository on the one-minute cadence.
       github.state.commits.push(commit("c5", "c4", NOW + MINUTE, "web-flow", "Ship exports (#9)"));
       github.state.pulls.push(pull(9, "c5", NOW + MINUTE));
       yield* TestClock.adjust(MINUTE);
@@ -1114,14 +1091,12 @@ describe("ProjectChangelog", () => {
       yield* takeUntil(left.pages, (page) => page.entries[0]?.id === "pr:9");
       yield* takeUntil(right.pages, (page) => page.entries[0]?.id === "pr:9");
 
-      // One watch closing leaves the other on the one-minute cadence.
       yield* Fiber.interrupt(left.fiber);
       github.state.commits.push(commit("c6", "c5", NOW + 2 * MINUTE, "web-flow", "Fix (#10)"));
       github.state.pulls.push(pull(10, "c6", NOW + 2 * MINUTE));
       yield* TestClock.adjust(MINUTE);
       yield* takeUntil(right.pages, (page) => page.entries[0]?.id === "pr:10");
 
-      // With no watch left, the sync already scheduled runs, then the cadence is fifteen minutes.
       yield* Fiber.interrupt(right.fiber);
       yield* TestClock.adjust(MINUTE);
       yield* changelog.drain;

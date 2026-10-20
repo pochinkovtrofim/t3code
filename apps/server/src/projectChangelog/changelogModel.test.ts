@@ -197,7 +197,7 @@ describe("associateLandings", () => {
 
   const listed = (...pullRequests: ReadonlyArray<MergedPullRequest>) => ({
     pullRequests,
-    coveredFrom: null,
+    incompleteBefore: null,
   });
 
   it("matches squash merges from the list and looks up the rest, newest first", () => {
@@ -209,7 +209,7 @@ describe("associateLandings", () => {
   it("calls a commit older than the list's coverage a direct push without asking", () => {
     const old = commit("old", [], { at: T0 - MINUTE });
     const recent = commit("recent", [], { at: T0 + MINUTE });
-    const mergedPulls = { pullRequests: [squash], coveredFrom: T0 };
+    const mergedPulls = { pullRequests: [squash], incompleteBefore: T0 };
     expect(commitsNeedingLookup({ commits: [old, recent], mergedPulls, budget: 10 })).toEqual([
       "recent",
     ]);

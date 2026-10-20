@@ -77,31 +77,31 @@ const ChangelogSummariesOutput = Schema.Struct({
 
 const promptId = (index: number) => `c${index + 1}`;
 
-/** Repository text cannot open or close a block, so it cannot forge another change's answer. */
-const fenced = (text: string) => text.replaceAll("<", "&lt;");
+// Repository text cannot open or close a block, so it cannot forge another change's answer.
+const escapeTags = (text: string) => text.replaceAll("<", "&lt;");
 
 function renderUnit(unit: ChangelogPromptUnit, id: string): string {
   const pull = unit.pullRequest;
   const lines = [
     `<change id="${id}" kind="${pull === null ? "direct commits" : "pull request"}">`,
     ...(pull === null
-      ? [`Pushed by ${fenced(unit.authors.join(", ")) || "unknown"}.`]
+      ? [`Pushed by ${escapeTags(unit.authors.join(", ")) || "unknown"}.`]
       : [
-          `Pull request #${pull.number}${pull.author === null ? "" : ` by ${fenced(pull.author)}`}: ${fenced(pull.title)}`,
+          `Pull request #${pull.number}${pull.author === null ? "" : ` by ${escapeTags(pull.author)}`}: ${escapeTags(pull.title)}`,
           ...(pull.body.trim() === ""
             ? []
-            : ["Description:", fenced(limitSection(pull.body.trim(), MAX_BODY_CHARS))]),
+            : ["Description:", escapeTags(limitSection(pull.body.trim(), MAX_BODY_CHARS))]),
         ]),
     `Commits (${unit.commitCount}):`,
     ...unit.commitSubjects
       .slice(0, MAX_SUBJECTS)
-      .map((subject) => `- ${fenced(subject.slice(0, MAX_SUBJECT_CHARS))}`),
+      .map((subject) => `- ${escapeTags(subject.slice(0, MAX_SUBJECT_CHARS))}`),
     ...(unit.commitCount > Math.min(unit.commitSubjects.length, MAX_SUBJECTS) ? ["- ..."] : []),
     ...unit.threads
       .slice(0, MAX_THREADS)
       .flatMap((thread) => [
-        `<session title="${fenced(thread.title).replaceAll('"', "'")}">`,
-        fenced(limitSection(thread.digest, MAX_THREAD_DIGEST_CHARS)),
+        `<session title="${escapeTags(thread.title).replaceAll('"', "'")}">`,
+        escapeTags(limitSection(thread.digest, MAX_THREAD_DIGEST_CHARS)),
         "</session>",
       ]),
     "</change>",
@@ -149,7 +149,6 @@ function capAtWord(text: string, maxChars: number): string {
   return `${(lastSpace > maxChars / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
-/** A title the model did not write, such as a pull request title, held to the same cap. */
 export function capChangelogTitle(text: string): string {
   return capAtWord(singleLine(text), MAX_TITLE_CHARS);
 }
@@ -165,7 +164,7 @@ function sanitizeTitle(raw: string): string {
 
 /**
  * Maps answers back to the caller's keys and holds every text to its cap. An id answered twice
- * drops every answer for it: either could be one that repository text talked the model into.
+ * drops both answers: either could be one that repository text talked the model into.
  */
 export function sanitizeChangelogSummaries(
   units: ReadonlyArray<Pick<ChangelogPromptUnit, "key">>,
@@ -194,7 +193,6 @@ export function sanitizeChangelogSummaries(
   return { entries, contested };
 }
 
-/** Calls the operation, or answers unsupported for a provider that does not implement it. */
 export function generateChangelogSummariesWith(
   generation: Pick<ProviderTextGeneration, "generateChangelogSummaries">,
   input: ChangelogSummaryGenerationInput,

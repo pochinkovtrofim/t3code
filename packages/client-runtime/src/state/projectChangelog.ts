@@ -7,6 +7,8 @@ import {
   createEnvironmentRpcSubscriptionAtomFamily,
 } from "./runtime.ts";
 
+const CHANGELOG_HEAD_IDLE_TTL_MS = 15_000;
+
 /** Only for environments that advertise the `projectChangelog` capability. */
 export function createProjectChangelogEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
@@ -16,9 +18,7 @@ export function createProjectChangelogEnvironmentAtoms<R, E>(
     head: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:project-changelog:head",
       tag: WS_METHODS.projectChangelogWatch,
-      // An open watch has the server read GitHub every minute. Ending it soon after the tab
-      // closes stops that, while a quick switch back still finds the page live.
-      idleTtlMs: 15_000,
+      idleTtlMs: CHANGELOG_HEAD_IDLE_TTL_MS,
     }),
     /** Older entries by the cursor of the page before. */
     page: createEnvironmentRpcQueryAtomFamily(runtime, {
