@@ -13,6 +13,8 @@ import * as ThreadTitleLinks from "./ThreadTitleLinks.ts";
 export type {
   BranchNameGenerationInput,
   BranchNameGenerationResult,
+  ChangelogSummaryGenerationInput,
+  ChangelogSummaryGenerationResult,
   CommitMessageGenerationInput,
   CommitMessageGenerationResult,
   PrContentGenerationInput,
@@ -32,7 +34,8 @@ type TextGenerationOp =
   | "generatePrContent"
   | "generateBranchName"
   | "generateThreadTitle"
-  | "generateReviewGuide";
+  | "generateReviewGuide"
+  | "generateChangelogSummaries";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -72,6 +75,10 @@ export const make = Effect.gen(function* () {
     generateReviewGuide: (input) =>
       resolveInstance(registry, "generateReviewGuide", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generateReviewGuide(input)),
+      ),
+    generateChangelogSummaries: (input) =>
+      resolveInstance(registry, "generateChangelogSummaries", input.modelSelection.instanceId).pipe(
+        Effect.flatMap((textGeneration) => textGeneration.generateChangelogSummaries(input)),
       ),
     generateThreadTitle: (input) =>
       resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
