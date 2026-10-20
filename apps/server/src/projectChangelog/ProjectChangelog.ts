@@ -1022,7 +1022,11 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       });
     }
     if (target._tag !== "Ready") {
-      return { page: emptyPage(input.projectId, AVAILABILITY[target._tag]), key: null };
+      return {
+        page: emptyPage(input.projectId, AVAILABILITY[target._tag]),
+        key: null,
+        eligible: false,
+      };
     }
     const key = target.repository.key;
     let row = yield* store.ensureRepository(target.repository);
@@ -1047,7 +1051,8 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     const syncing = yield* FiberMap.has(syncs, key);
     return {
       page: toPage({ projectId: input.projectId, row, entries, limit, syncing }),
-      key: target.eligible ? key : null,
+      key,
+      eligible: target.eligible,
     };
   });
 
@@ -1077,6 +1082,9 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
         const changed = yield* PubSub.subscribe(changes);
         const settingsChanged = yield* serverSettings.subscribeChanges;
         const leased = yield* Ref.make<RepositoryKey | null>(null);
+        // Followed even before background work runs for it, so the watch hears the first sync
+        // once a project thread makes the project eligible.
+        const watched = yield* Ref.make<RepositoryKey | null>(null);
         const lease = (next: RepositoryKey | null) =>
           Ref.getAndSet(leased, next).pipe(
             Effect.flatMap((previous) =>
@@ -1102,13 +1110,15 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
           { projectId: input.projectId, limit: PROJECT_CHANGELOG_HEAD_PAGE },
           { waitForSync: false },
         ).pipe(
-          Effect.tap(({ key }) => lease(key)),
+          Effect.tap(({ key, eligible }) =>
+            Ref.set(watched, key).pipe(Effect.andThen(lease(eligible ? key : null))),
+          ),
           Effect.map(({ page }) => page),
         );
         const triggers = Stream.merge(
           Stream.fromSubscription(changed).pipe(
             Stream.filterEffect((key) =>
-              Ref.get(leased).pipe(Effect.map((current) => current === key)),
+              Ref.get(watched).pipe(Effect.map((current) => current === key)),
             ),
           ),
           settingsChanged,

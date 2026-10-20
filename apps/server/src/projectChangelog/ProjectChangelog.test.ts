@@ -973,6 +973,25 @@ describe("ProjectChangelog", () => {
     }).pipe(Effect.provide(layer), atNow);
   });
 
+  it.effect("updates a watch opened before the project had a project thread", () => {
+    const { github, layer } = harness();
+    return Effect.gen(function* () {
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const { pages } = yield* watchInto(changelog, p1);
+      const before = yield* Queue.take(pages);
+      assert.deepStrictEqual(before.entries, []);
+
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      yield* TestClock.adjust(MINUTE);
+      yield* takeUntil(pages, (page) => page.entries.length === 4);
+      // Now eligible, the open watch puts the repository on the one-minute cadence.
+      github.state.commits.push(commit("c5", "c4", NOW + MINUTE, "web-flow", "Ship exports (#9)"));
+      github.state.pulls.push(pull(9, "c5", NOW + MINUTE));
+      yield* TestClock.adjust(MINUTE);
+      yield* takeUntil(pages, (page) => page.entries[0]?.id === "pr:9");
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
   it.effect("syncs every minute while any watch is open, and every fifteen after", () => {
     const { github, layer } = harness();
     return Effect.gen(function* () {
