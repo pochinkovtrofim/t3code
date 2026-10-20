@@ -15,6 +15,7 @@ import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import { makeProjectThreadId } from "@t3tools/shared/projectThread";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectStore from "./ProjectStore.ts";
@@ -418,6 +419,48 @@ describe("ThreadTitleRegenerationService", () => {
         const projection = yield* threads.getThreadProjection(threadId);
         assert.equal(projection.thread.title, "Seed title");
         assert.isNotOk(projection.thread.titleRegeneration);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect.each([
+    { thread: "thread:title:seeded", generates: true },
+    { thread: makeProjectThreadId("title-seeded"), generates: false },
+  ])("schedules initial title generation from a title seed: $thread", ({ thread, generates }) =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      yield* Effect.gen(function* () {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const threadId = yield* createThread({ command: `create:${thread}`, thread });
+        const commandId = CommandId.make(`message:${thread}`);
+        yield* threads.dispatch({
+          type: "message.dispatch",
+          commandId,
+          threadId,
+          messageId: MessageId.make(`message:${thread}:id`),
+          text: "What is this project about?",
+          titleSeed: "What is this project about?",
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "defer_start" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+
+        const titleEffects = (yield* outbox.listByCommandId(commandId)).filter(
+          (effect) => effect.request.type === "thread-title.generate",
+        );
+        const projection = yield* threads.getThreadProjection(threadId);
+        assert.equal(titleEffects.length, generates ? 1 : 0);
+        assert.equal(
+          projection.thread.title,
+          generates ? "What is this project about?" : "Seed title",
+        );
+        assert.equal(
+          projection.thread.titleRegeneration?.requestId,
+          generates ? commandId : undefined,
+        );
       }).pipe(Effect.provide(harness.layer));
     }),
   );

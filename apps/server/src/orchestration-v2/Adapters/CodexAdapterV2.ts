@@ -102,6 +102,9 @@ import {
   buildCodexDeveloperInstructions,
 } from "../../provider/CodexDeveloperInstructions.ts";
 import {
+  CODEX_T3_MCP_SERVER_NAME,
+  codexApprovalPolicyForTurn,
+  codexMcpElicitationDisposition,
   describeMcpElicitation,
   toMcpElicitationResponse,
 } from "../../provider/CodexMcpElicitation.ts";
@@ -731,10 +734,12 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     readonly appContext?: ProviderAdapter.ProviderAdapterV2TurnInput["appContext"];
   }) {
     const runtimeModeDefaults = codexRuntimeModeTurnDefaults(input.runtimePolicy.runtimeMode);
-    const approvalPolicy =
+    const approvalPolicy = codexApprovalPolicyForTurn(
+      input.runtimePolicy,
       input.runtimePolicy.approvalPolicy === undefined
         ? runtimeModeDefaults.approvalPolicy
-        : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
+        : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy),
+    );
     const sandboxPolicy =
       input.runtimePolicy.sandboxPolicy === undefined
         ? runtimeModeDefaults.sandboxPolicy
@@ -1350,7 +1355,7 @@ function codexThreadRuntimeParams(input: {
         ? {}
         : {
             // Override only T3's server so launch-argument MCP servers survive.
-            "mcp_servers.t3-code": {
+            [`mcp_servers.${CODEX_T3_MCP_SERVER_NAME}`]: {
               url: mcpSession.endpoint,
               tool_timeout_sec: CODEX_T3_MCP_TOOL_TIMEOUT_SEC,
               http_headers: {
@@ -5369,6 +5374,24 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return {
                 action: "decline",
               } satisfies CodexSchema.McpServerElicitationRequestResponse;
+            }
+            const disposition = codexMcpElicitationDisposition(
+              context.input.runtimePolicy,
+              payload,
+            );
+            if (disposition !== "ask") {
+              yield* Effect.logInfo(
+                "Answered an MCP elicitation for a read-only orchestrating turn.",
+                {
+                  threadId: context.projectionThreadId,
+                  serverName: payload.serverName,
+                  disposition,
+                  prompt: payload.message,
+                },
+              );
+              return disposition === "accept"
+                ? toMcpElicitationResponse(payload, "accept")
+                : ({ action: "decline" } satisfies CodexSchema.McpServerElicitationRequestResponse);
             }
 
             const nativeRequestId =

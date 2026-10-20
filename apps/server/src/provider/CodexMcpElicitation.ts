@@ -1,6 +1,9 @@
 import type { ProviderApprovalDecision, ProviderApprovalOption } from "@t3tools/contracts";
+import type { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Schema from "effect/Schema";
 import type * as EffectCodexSchema from "effect-codex-app-server/schema";
+
+import { CLAUDE_ORCHESTRATING_READ_ONLY_T3_MCP_ALLOWED_TOOLS } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 
 const NullableMcpElicitationString = Schema.NullOr(Schema.String);
 const McpElicitationMetadata = Schema.Struct({
@@ -217,4 +220,70 @@ export function toMcpElicitationResponse(
     ...(persist ? { _meta: { persist } } : {}),
     ...(form ? { content } : {}),
   };
+}
+
+/** The name T3 registers its own MCP server under in every Codex thread. */
+export const CODEX_T3_MCP_SERVER_NAME = "t3-code";
+
+// Claude's allowlist is the single list of T3 tools a read-only orchestrating
+// turn may call, so both providers allow the same ones.
+const ORCHESTRATING_READ_ONLY_T3_TOOLS: ReadonlySet<string> = new Set(
+  CLAUDE_ORCHESTRATING_READ_ONLY_T3_MCP_ALLOWED_TOOLS.map((tool) =>
+    tool.replace(`mcp__${CODEX_T3_MCP_SERVER_NAME}__`, ""),
+  ),
+);
+
+const isMcpToolCallApprovalMetadata = Schema.is(
+  Schema.Struct({ codex_approval_kind: Schema.Literal("mcp_tool_call") }),
+);
+
+// Codex names the tool only in the prompt it builds for a tool-call approval
+// (codex-rs build_mcp_tool_approval_fallback_message); its _meta has no tool name.
+const T3_TOOL_CALL_APPROVAL_MESSAGE = new RegExp(
+  `^Allow the ${CODEX_T3_MCP_SERVER_NAME} MCP server to run tool "([^"]+)"\\?$`,
+);
+
+/**
+ * Under approval policy "never" Codex fails every MCP tool call that is not
+ * marked read-only without asking, which would leave a project thread unable to
+ * launch anything. A turn allowed to orchestrate T3 instead lets MCP approvals
+ * through to the adapter; sandbox escapes and every other category stay
+ * rejected without asking.
+ */
+export function codexApprovalPolicyForTurn(
+  runtimePolicy: ProviderAdapterV2RuntimePolicy,
+  approvalPolicy: EffectCodexSchema.V2TurnStartParams__AskForApproval | null,
+): EffectCodexSchema.V2TurnStartParams__AskForApproval | null {
+  return runtimePolicy.allowT3Orchestration === true && approvalPolicy === "never"
+    ? {
+        granular: {
+          mcp_elicitations: true,
+          request_permissions: false,
+          rules: false,
+          sandbox_approval: false,
+          skill_approval: false,
+        },
+      }
+    : approvalPolicy;
+}
+
+/**
+ * How the adapter answers an MCP elicitation. In a turn allowed to orchestrate
+ * T3, calls to T3's read-only and thread orchestration tools are accepted and
+ * everything else is declined, as the turn's "never" policy would; any other
+ * turn asks the user.
+ */
+export function codexMcpElicitationDisposition(
+  runtimePolicy: ProviderAdapterV2RuntimePolicy,
+  payload: EffectCodexSchema.McpServerElicitationRequestParams,
+): "accept" | "decline" | "ask" {
+  if (runtimePolicy.allowT3Orchestration !== true) return "ask";
+  const toolName = T3_TOOL_CALL_APPROVAL_MESSAGE.exec(payload.message)?.[1];
+  return payload.serverName === CODEX_T3_MCP_SERVER_NAME &&
+    payload.mode !== "url" &&
+    isMcpToolCallApprovalMetadata(payload._meta) &&
+    toolName !== undefined &&
+    ORCHESTRATING_READ_ONLY_T3_TOOLS.has(toolName)
+    ? "accept"
+    : "decline";
 }

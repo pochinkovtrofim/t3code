@@ -202,6 +202,12 @@ export function createProjectEnvironmentAtoms<R, E>(
       scheduler: projectScheduler,
       concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
     }),
+    ensureThread: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:projects:ensure-thread",
+      tag: WS_METHODS.projectThreadsEnsure,
+      scheduler: projectScheduler,
+      concurrency: projectConcurrency,
+    }),
     createNew: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:projects:create-new",
       tag: WS_METHODS.projectsCreateNew,

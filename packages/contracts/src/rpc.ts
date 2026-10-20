@@ -372,6 +372,11 @@ import {
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
+import {
+  ProjectThreadDisabledError,
+  ProjectThreadEnsureInput,
+  ProjectThreadEnsureResult,
+} from "./projectThread.ts";
 
 export const WS_METHODS = {
   projectsList: "projects.list",
@@ -386,6 +391,7 @@ export const WS_METHODS = {
   projectsMutate: "projects.mutate",
   projectsEnsureScratch: "projects.ensureScratch",
   projectsCreateNew: "projects.createNew",
+  projectThreadsEnsure: "projectThreads.ensure",
 
   shellOpenInEditor: "shell.openInEditor",
 
@@ -1240,6 +1246,16 @@ const WsProjectsEnsureScratchRpc = Rpc.make(WS_METHODS.projectsEnsureScratch, {
   error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
 });
 
+const WsProjectThreadsEnsureRpc = Rpc.make(WS_METHODS.projectThreadsEnsure, {
+  payload: ProjectThreadEnsureInput,
+  success: ProjectThreadEnsureResult,
+  error: Schema.Union([
+    ProjectThreadDisabledError,
+    OrchestrationDispatchCommandError,
+    EnvironmentAuthorizationError,
+  ]),
+});
+
 const WsProjectsCreateNewRpc = Rpc.make(WS_METHODS.projectsCreateNew, {
   payload: ProjectCreateNewInput,
   success: ProjectCreateNewResult,
@@ -1974,6 +1990,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsSearchEntriesRpc,
   WsProjectsEnsureScratchRpc,
   WsProjectsCreateNewRpc,
+  WsProjectThreadsEnsureRpc,
   WsProjectsWriteFileRpc,
   WsProjectsMutateRpc,
   WsShellOpenInEditorRpc,

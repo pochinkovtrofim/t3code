@@ -710,6 +710,51 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
     ]);
   });
 
+  it("adds only the thread tools for a read-only turn that orchestrates T3", () => {
+    const mcpSession = mcpSessionFor(ThreadId.make("thread-claude-mcp-orchestrating"));
+    const orchestrating = ClaudeAdapterV2.claudeMcpQueryOverrides({
+      mcpSession,
+      readOnlySandbox: true,
+      allowT3Orchestration: true,
+      allowedTools: [...ClaudeAdapterV2.CLAUDE_READ_ONLY_ALLOWED_TOOLS],
+    });
+
+    assert.deepEqual(orchestrating, {
+      allowedTools: [
+        ...ClaudeAdapterV2.CLAUDE_READ_ONLY_ALLOWED_TOOLS,
+        ...ClaudeAdapterV2.CLAUDE_ORCHESTRATING_READ_ONLY_T3_MCP_ALLOWED_TOOLS,
+      ],
+      mcpServers: T3_MCP_SERVERS,
+    });
+    for (const tool of [
+      ClaudeAdapterV2.CLAUDE_T3_MCP_TOOL_WILDCARD,
+      "mcp__t3-code__delegate_task",
+      "mcp__t3-code__t3_project_delete",
+      "Write",
+      "Bash",
+    ]) {
+      assert.isFalse(orchestrating.allowedTools?.includes(tool), tool);
+    }
+    assert.notEqual(
+      ClaudeAdapterV2.claudeEffectiveQueryPolicyKey(
+        { permissionMode: "dontAsk", installPermissionCallback: false },
+        orchestrating,
+      ),
+      ClaudeAdapterV2.claudeEffectiveQueryPolicyKey(
+        { permissionMode: "dontAsk", installPermissionCallback: false },
+        ClaudeAdapterV2.claudeMcpQueryOverrides({ mcpSession, readOnlySandbox: true }),
+      ),
+    );
+    assert.deepEqual(
+      ClaudeAdapterV2.claudeMcpQueryOverrides({
+        mcpSession,
+        readOnlySandbox: false,
+        allowT3Orchestration: true,
+      }).allowedTools,
+      [ClaudeAdapterV2.CLAUDE_T3_MCP_TOOL_WILDCARD],
+    );
+  });
+
   it("keys live-query reuse on the MCP-derived pre-approvals", () => {
     const threadId = ThreadId.make("thread-claude-mcp-query-key");
     const mcpSession = mcpSessionFor(threadId);
@@ -784,6 +829,34 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
       [...ClaudeAdapterV2.CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS].sort(),
       readOnlyToolNames,
     );
+  });
+
+  it("extends the read-only allowlist with exactly the thread tools a project thread steers with", () => {
+    const toolNames = new Set(
+      [
+        ...Object.values(OrchestratorToolkit.tools),
+        ...Object.values(ThreadToolkit.tools),
+        ...Object.values(ProjectToolkit.tools),
+      ].map((tool) => `mcp__t3-code__${tool.name}`),
+    );
+    const added = ClaudeAdapterV2.CLAUDE_ORCHESTRATING_READ_ONLY_T3_MCP_ALLOWED_TOOLS.filter(
+      (tool) => !ClaudeAdapterV2.CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS.includes(tool),
+    );
+
+    assert.includeMembers(
+      [...ClaudeAdapterV2.CLAUDE_ORCHESTRATING_READ_ONLY_T3_MCP_ALLOWED_TOOLS],
+      [...ClaudeAdapterV2.CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS],
+    );
+    assert.deepEqual(added.sort(), [
+      "mcp__t3-code__t3_thread_configure",
+      "mcp__t3-code__t3_thread_interrupt",
+      "mcp__t3-code__t3_thread_launch",
+      "mcp__t3-code__t3_thread_read",
+      "mcp__t3-code__t3_thread_send",
+    ]);
+    for (const tool of added) {
+      assert.isTrue(toolNames.has(tool), tool);
+    }
   });
 });
 
