@@ -155,6 +155,10 @@
       "types": "./src/projectSettings.ts",
       "import": "./src/projectSettings.ts"
     },
+    "./projectThread": {
+      "types": "./src/projectThread.ts",
+      "import": "./src/projectThread.ts"
+    },
     "./t3ProjectFile": {
       "types": "./src/t3ProjectFile.ts",
       "import": "./src/t3ProjectFile.ts"
