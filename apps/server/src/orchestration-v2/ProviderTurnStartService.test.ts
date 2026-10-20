@@ -4,6 +4,7 @@ import { it as effectIt } from "@effect/vitest";
 import {
   CheckpointScopeId,
   ContextTransferId,
+  DEFAULT_PROJECT_THREAD_INSTRUCTIONS,
   MessageId,
   NodeId,
   ProviderSessionId,
@@ -18,6 +19,7 @@ import {
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
+import { makeProjectThreadId, projectThreadTurnText } from "@t3tools/shared/projectThread";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -289,9 +291,10 @@ function makeLocalCommandHarness(input: {
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
   readonly failReadsAfterRunning?: boolean;
+  readonly threadId?: ThreadId;
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
-  const threadId = ThreadId.make("thread-native-account-command");
+  const threadId = input.threadId ?? ThreadId.make("thread-native-account-command");
   const runId = RunId.make("run-native-account-command");
   const rootNodeId = NodeId.make("root-native-account-command");
   const attemptId = RunAttemptId.make("attempt-native-account-command");
@@ -638,7 +641,12 @@ function makeLocalCommandHarness(input: {
         }),
         Layer.mock(ProjectService.ProjectService)({
           getById: () =>
-            Effect.succeed(Option.some({ workspaceRoot: "/tmp/native-account-project" } as never)),
+            Effect.succeed(
+              Option.some({
+                title: "Native account project",
+                workspaceRoot: "/tmp/native-account-project",
+              } as never),
+            ),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadRecords,
@@ -782,6 +790,31 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
         }),
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+effectIt.effect("sends a project thread's instructions to its provider, not into its history", () =>
+  Effect.gen(function* () {
+    const text = "Add a dark mode toggle.";
+    const projectThread = makeLocalCommandHarness({
+      text,
+      threadId: makeProjectThreadId("turn-start"),
+      failReadsAfterRunning: true,
+    });
+    yield* projectThread.start;
+
+    expect(projectThread.startRootRun.mock.calls[0]?.[0].message.text).toBe(
+      projectThreadTurnText({
+        text,
+        instructions: DEFAULT_PROJECT_THREAD_INSTRUCTIONS,
+        project: { title: "Native account project", workspaceRoot: "/tmp/native-account-project" },
+      }),
+    );
+    expect(projectThread.projection().messages.at(-1)?.text).toBe(text);
+
+    const ordinary = makeLocalCommandHarness({ text, failReadsAfterRunning: true });
+    yield* ordinary.start;
+    expect(ordinary.startRootRun.mock.calls[0]?.[0].message.text).toBe(text);
+  }),
 );
 
 effectIt.effect("reads only thread state before taking the startup lease", () =>

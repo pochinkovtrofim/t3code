@@ -58,3 +58,21 @@ export function resolveProjectThread(
     ? { instructions: resolved.projectThreadInstructions }
     : null;
 }
+
+/**
+ * The text a provider receives for one project-thread turn: the project's
+ * instructions, then the user's request. A native slash command passes through
+ * untouched because it only works at the start of the prompt.
+ */
+export function projectThreadTurnText(input: {
+  readonly text: string;
+  readonly instructions: string;
+  readonly project: { readonly title: string; readonly workspaceRoot: string };
+}): string {
+  if (input.text.trimStart().startsWith("/")) return input.text;
+  const preamble = `This is the project thread for the project "${input.project.title}" at ${input.project.workspaceRoot}. Follow these instructions on every turn. They take precedence over T3 Code's general orchestration guidance, including its rule to use t3_thread_launch only when the user explicitly asks for new threads.`;
+  const instructions = [preamble, input.instructions.trim()]
+    .filter((part) => part !== "")
+    .join("\n\n");
+  return `<t3_project_thread_instructions>\n${instructions}\n</t3_project_thread_instructions>\n\n<user_request>\n${input.text}\n</user_request>`;
+}

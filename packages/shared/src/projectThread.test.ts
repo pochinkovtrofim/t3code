@@ -12,6 +12,7 @@ import {
   isProjectThreadId,
   makeProjectThreadId,
   projectThreadEnforcement,
+  projectThreadTurnText,
   resolveProjectThread,
 } from "./projectThread.ts";
 
@@ -95,5 +96,49 @@ describe("resolveProjectThread", () => {
     expect(
       resolveProjectThread(settings, { id: makeProjectThreadId("2"), projectId: otherProjectId }),
     ).toEqual({ instructions: DEFAULT_PROJECT_THREAD_INSTRUCTIONS });
+  });
+});
+
+describe("projectThreadTurnText", () => {
+  const project = { title: "Alpha app", workspaceRoot: "/repo/alpha" };
+
+  it("puts the project's instructions ahead of the user's request", () => {
+    const text = projectThreadTurnText({
+      text: "Add a dark mode toggle.",
+      instructions: "Launch a thread for every change.",
+      project,
+    });
+    expect(text).toBe(
+      [
+        "<t3_project_thread_instructions>",
+        'This is the project thread for the project "Alpha app" at /repo/alpha. Follow these instructions on every turn. They take precedence over T3 Code\'s general orchestration guidance, including its rule to use t3_thread_launch only when the user explicitly asks for new threads.',
+        "",
+        "Launch a thread for every change.",
+        "</t3_project_thread_instructions>",
+        "",
+        "<user_request>",
+        "Add a dark mode toggle.",
+        "</user_request>",
+      ].join("\n"),
+    );
+  });
+
+  it("keeps the fixed preamble when the user clears the instructions", () => {
+    const text = projectThreadTurnText({ text: "Status?", instructions: "", project });
+    expect(text).toContain('project thread for the project "Alpha app" at /repo/alpha.');
+    expect(text).not.toContain("\n\n\n");
+    expect(text.endsWith("<user_request>\nStatus?\n</user_request>")).toBe(true);
+  });
+
+  it("passes native slash commands through untouched", () => {
+    for (const command of ["/compact", "  /review main"]) {
+      expect(
+        projectThreadTurnText({ text: command, instructions: "Launch threads.", project }),
+      ).toBe(command);
+    }
+  });
+
+  it("ships default instructions short enough to repeat on every turn", () => {
+    expect(DEFAULT_PROJECT_THREAD_INSTRUCTIONS.length).toBeLessThan(900);
   });
 });
