@@ -111,7 +111,11 @@ function makeGitHub() {
           const walk = firstParentChain({
             headSha: input.headSha,
             stopAtSha: input.stopAtSha,
-            commits: new Map(state.commits.map((value) => [value.sha, value])),
+            commits: new Map(
+              state.commits
+                .filter((value) => input.since === null || value.committedAt >= input.since)
+                .map((value) => [value.sha, value]),
+            ),
             maxLength: input.maxCommits,
           });
           return { chain: walk.chain, reachedCursor: walk.end._tag === "Cursor" };
@@ -432,6 +436,51 @@ describe("ProjectChangelog", () => {
       assert.deepStrictEqual(page.entries, []);
       assert.isNull(page.sync.lastSyncedAt);
       assert.deepStrictEqual(github.state.calls, []);
+      assert.strictEqual(model.calls.length, 0);
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("syncs in the background a project whose shell has no identity yet", () => {
+    // Right after startup the shell's identity cache is empty; the resolver still knows the remote.
+    const { github, model, layer } = harness({
+      projects: [{ ...shell("p1"), repositoryIdentity: null }],
+    });
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      yield* TestClock.adjust(MINUTE);
+      yield* eventually(Effect.sync(() => (model.calls.length > 0 ? true : null)));
+      assert.isTrue(github.state.calls.includes("readHistory"));
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("records the head of a repository with nothing in the backfill window", () => {
+    const { github, model, layer } = harness();
+    github.state.commits = github.state.commits.map((value) => ({
+      ...value,
+      committedAt: value.committedAt - 40 * 24 * 60 * MINUTE,
+    }));
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const first = yield* changelog.read({ projectId: p1 });
+      assert.deepStrictEqual(first.entries, []);
+      assert.strictEqual(first.repository?.defaultBranch, "main");
+
+      github.state.calls.length = 0;
+      yield* TestClock.adjust(16 * MINUTE);
+      yield* eventually(
+        changelog
+          .read({ projectId: p1 })
+          .pipe(
+            Effect.map((page) =>
+              page.sync.lastSyncedAt !== first.sync.lastSyncedAt ? page : null,
+            ),
+          ),
+      );
+      assert.deepStrictEqual([...new Set(github.state.calls)].toSorted(), [
+        "readHead",
+        "readProduction",
+      ]);
       assert.strictEqual(model.calls.length, 0);
     }).pipe(Effect.provide(layer), atNow);
   });

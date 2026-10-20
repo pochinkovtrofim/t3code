@@ -244,6 +244,12 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
   const projectThreadsEnabled = (settings: ServerSettingsValue, shell: OrchestrationProjectShell) =>
     resolveProjectSettings(settings, shell.id, shell).settings.projectThreadsEnabled;
 
+  // The shell's identity comes from a cache that is empty right after startup.
+  const identityOf = (shell: OrchestrationProjectShell) =>
+    shell.repositoryIdentity === null
+      ? identities.resolve(shell.workspaceRoot)
+      : Effect.succeed(shell.repositoryIdentity);
+
   const listTargets = Effect.fn("ProjectChangelog.listTargets")(function* () {
     const settings = yield* serverSettings.getSettings;
     const shells = yield* projects.listShells();
@@ -257,7 +263,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       }
     >();
     for (const shell of shells) {
-      const resolution = resolveGitHubRepository(shell.repositoryIdentity);
+      const resolution = resolveGitHubRepository(yield* identityOf(shell));
       if (resolution._tag !== "GitHub") continue;
       const target = byKey.get(resolution.repository.key) ?? {
         repository: resolution.repository,
@@ -282,10 +288,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     if (!projectThreadsEnabled(settings, shell.value)) {
       return { _tag: "Disabled" } satisfies ProjectTarget;
     }
-    // The shell's identity comes from a cache that is empty right after startup.
-    const identity =
-      shell.value.repositoryIdentity ?? (yield* identities.resolve(shell.value.workspaceRoot));
-    const resolution = resolveGitHubRepository(identity);
+    const resolution = resolveGitHubRepository(yield* identityOf(shell.value));
     if (resolution._tag !== "GitHub") return resolution satisfies ProjectTarget;
     const known = (yield* Ref.get(targets)).get(resolution.repository.key);
     const eligible =
@@ -401,7 +404,9 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       ),
     ];
     let backlog = false;
-    if (reset || landings.length > 0) {
+    // A first sync with nothing in the window still records the head, or every later sync
+    // would read the history again.
+    if (reset || cursor === null || landings.length > 0) {
       const tail = reset ? null : yield* store.tail(key);
       const { units, deferred } = groupChangeUnits({ repository, tail, landings });
       const unitKeyOf = unitKeyByOrdinal(units);
