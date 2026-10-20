@@ -2,6 +2,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type { ProviderInstanceId } from "@t3tools/contracts";
+import { generateChangelogSummariesWith } from "@t3tools/provider-core/server/changelogPrompt"; // fork: project changelog
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import { TextGenerationError } from "@t3tools/contracts";
 
@@ -78,7 +79,7 @@ export const make = Effect.gen(function* () {
       ),
     generateChangelogSummaries: (input) =>
       resolveInstance(registry, "generateChangelogSummaries", input.modelSelection.instanceId).pipe(
-        Effect.flatMap((textGeneration) => textGeneration.generateChangelogSummaries(input)),
+        Effect.flatMap((textGeneration) => generateChangelogSummariesWith(textGeneration, input)),
       ),
     generateThreadTitle: (input) =>
       resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(

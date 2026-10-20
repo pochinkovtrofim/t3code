@@ -6,8 +6,10 @@ import {
   buildChangelogSummariesPrompt,
   type ChangelogPromptUnit,
   changelogUnitPromptBytes,
+  generateChangelogSummariesWith,
   sanitizeChangelogSummaries,
 } from "./changelogPrompt.ts";
+import type { ProviderTextGeneration } from "./textGeneration.ts";
 import { decodeJsonReply, fromRunner, type Runner } from "./textGenerationOperations.ts";
 import { toJsonSchemaObject } from "./textGenerationUtils.ts";
 
@@ -110,7 +112,7 @@ describe("fromRunner.generateChangelogSummaries", () => {
         requests.push({ operation: request.operation, prompt: request.prompt });
         return decodeJsonReply(request, "Test", `Here you go: ${JSON.stringify(reply)}`);
       };
-      const result = yield* fromRunner("Test", runner).generateChangelogSummaries({
+      const result = yield* generateChangelogSummariesWith(fromRunner("Test", runner), {
         repository: "pochinkovtrofim/t3code",
         units: [pullUnit, pushUnit],
         cwd: "/tmp",
@@ -125,6 +127,27 @@ describe("fromRunner.generateChangelogSummaries", () => {
           category: "fix",
         },
       ]);
+    }),
+  );
+});
+
+describe("generateChangelogSummariesWith", () => {
+  it.effect("answers unsupported for a provider that does not implement the operation", () =>
+    Effect.gen(function* () {
+      const runner: Runner = () => Effect.die("no request expected");
+      const { generateChangelogSummaries: _, ...withoutChangelog } = fromRunner("Test", runner);
+      // A provider written against upstream's interface still type-checks.
+      const upstreamProvider: ProviderTextGeneration = withoutChangelog;
+      const error = yield* Effect.flip(
+        generateChangelogSummariesWith(upstreamProvider, {
+          repository: "pochinkovtrofim/t3code",
+          units: [pushUnit],
+          cwd: "/tmp",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4-mini" },
+        }),
+      );
+      expect(error._tag).toBe("TextGenerationError");
+      expect(error.operation).toBe("generateChangelogSummaries");
     }),
   );
 });

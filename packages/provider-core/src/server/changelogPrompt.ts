@@ -2,9 +2,11 @@
 // of changes that landed on a project's default branch. Fork-owned, so the upstream prompt file
 // stays untouched; the operation reaches every runner-based provider through fromRunner.
 
-import type { ModelSelection } from "@t3tools/contracts";
+import { type ModelSelection, TextGenerationError } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import type { ProviderTextGeneration } from "./textGeneration.ts";
 import { limitSection } from "./textGenerationUtils.ts";
 
 export const CHANGELOG_CATEGORIES = ["feature", "fix", "improvement", "maintenance"] as const;
@@ -168,4 +170,20 @@ export function sanitizeChangelogSummaries(
     entries.set(key, { key, title, summary, category: answer.category });
   }
   return { entries: [...entries.values()] };
+}
+
+/** Calls the operation, or answers unsupported for a provider that does not implement it. */
+export function generateChangelogSummariesWith(
+  generation: Pick<ProviderTextGeneration, "generateChangelogSummaries">,
+  input: ChangelogSummaryGenerationInput,
+): Effect.Effect<ChangelogSummaryGenerationResult, TextGenerationError> {
+  return (
+    generation.generateChangelogSummaries?.(input) ??
+    Effect.fail(
+      new TextGenerationError({
+        operation: "generateChangelogSummaries",
+        detail: "This provider does not write changelog summaries.",
+      }),
+    )
+  );
 }

@@ -121,7 +121,8 @@ export interface ProviderTextGeneration {
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
 
-  readonly generateChangelogSummaries: (
+  // fork: project changelog. Optional, so a provider added upstream compiles without it.
+  readonly generateChangelogSummaries?: (
     input: ChangelogSummaryGenerationInput,
   ) => Effect.Effect<ChangelogSummaryGenerationResult, TextGenerationError>;
 }

@@ -25,6 +25,7 @@ import {
 import {
   type ChangelogPromptUnit,
   changelogUnitPromptBytes,
+  generateChangelogSummariesWith,
 } from "@t3tools/provider-core/server/changelogPrompt";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Clock from "effect/Clock";
@@ -555,7 +556,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
           .textGenerationModelSelection;
         const generated = yield* modelSlots
           .withPermits(1)(
-            textGeneration.generateChangelogSummaries({
+            generateChangelogSummariesWith(textGeneration, {
               repository: `${target.repository.owner}/${target.repository.name}`,
               units: batch.map(({ unit }) => unit),
               // CLIs need a directory to run in; nothing reads the checkout.
