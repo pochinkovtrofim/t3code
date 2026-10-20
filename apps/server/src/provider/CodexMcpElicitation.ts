@@ -1,8 +1,9 @@
 import type { ProviderApprovalDecision, ProviderApprovalOption } from "@t3tools/contracts";
 import type { ProviderAdapterV2RuntimePolicy } from "@t3tools/provider-core/server/ProviderAdapter";
-import { PROJECT_THREAD_ORCHESTRATION_TOOLS } from "@t3tools/shared/projectThread";
 import * as Schema from "effect/Schema";
 import type * as EffectCodexSchema from "effect-codex-app-server/schema";
+
+import { CLAUDE_ORCHESTRATING_READ_ONLY_T3_MCP_ALLOWED_TOOLS } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 
 const NullableMcpElicitationString = Schema.NullOr(Schema.String);
 const McpElicitationMetadata = Schema.Struct({
@@ -224,6 +225,14 @@ export function toMcpElicitationResponse(
 /** The name T3 registers its own MCP server under in every Codex thread. */
 export const CODEX_T3_MCP_SERVER_NAME = "t3-code";
 
+// Claude's allowlist is the single list of T3 tools a read-only orchestrating
+// turn may call, so both providers allow the same ones.
+const ORCHESTRATING_READ_ONLY_T3_TOOLS: ReadonlySet<string> = new Set(
+  CLAUDE_ORCHESTRATING_READ_ONLY_T3_MCP_ALLOWED_TOOLS.map((tool) =>
+    tool.replace(`mcp__${CODEX_T3_MCP_SERVER_NAME}__`, ""),
+  ),
+);
+
 const isMcpToolCallApprovalMetadata = Schema.is(
   Schema.Struct({ codex_approval_kind: Schema.Literal("mcp_tool_call") }),
 );
@@ -260,8 +269,9 @@ export function codexApprovalPolicyForTurn(
 
 /**
  * How the adapter answers an MCP elicitation. In a turn allowed to orchestrate
- * T3, calls to T3's thread orchestration tools are accepted and everything else
- * is declined, as the turn's "never" policy would; any other turn asks the user.
+ * T3, calls to T3's read-only and thread orchestration tools are accepted and
+ * everything else is declined, as the turn's "never" policy would; any other
+ * turn asks the user.
  */
 export function codexMcpElicitationDisposition(
   runtimePolicy: ProviderAdapterV2RuntimePolicy,
@@ -273,7 +283,7 @@ export function codexMcpElicitationDisposition(
     payload.mode !== "url" &&
     isMcpToolCallApprovalMetadata(payload._meta) &&
     toolName !== undefined &&
-    PROJECT_THREAD_ORCHESTRATION_TOOLS.has(toolName)
+    ORCHESTRATING_READ_ONLY_T3_TOOLS.has(toolName)
     ? "accept"
     : "decline";
 }

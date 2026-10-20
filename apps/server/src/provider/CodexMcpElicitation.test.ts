@@ -254,8 +254,14 @@ describe("T3 tool calls in a read-only orchestrating turn", () => {
     NodeAssert.equal(codexApprovalPolicyForTurn(orchestrating, "on-request"), "on-request");
   });
 
-  it("accepts T3's thread orchestration tool calls without asking the user", () => {
-    NodeAssert.equal(codexMcpElicitationDisposition(orchestrating, t3ToolCall), "accept");
+  it("accepts T3's thread orchestration and read-only tool calls without asking the user", () => {
+    for (const tool of ["t3_thread_launch", "t3_thread_list", "t3_project_read"]) {
+      const payload = {
+        ...t3ToolCall,
+        message: `Allow the t3-code MCP server to run tool "${tool}"?`,
+      };
+      NodeAssert.equal(codexMcpElicitationDisposition(orchestrating, payload), "accept");
+    }
     NodeAssert.deepStrictEqual(toMcpElicitationResponse(t3ToolCall, "accept"), {
       action: "accept",
       content: {},
@@ -266,6 +272,11 @@ describe("T3 tool calls in a read-only orchestrating turn", () => {
     const { _meta: __, ...withoutMetadata } = t3ToolCall;
     for (const payload of [
       { ...t3ToolCall, serverName: "computer-use" },
+      {
+        ...t3ToolCall,
+        serverName: "computer-use",
+        message: 'Allow the t3-code MCP server to run tool "t3_thread_list"?',
+      },
       { ...t3ToolCall, message: 'Allow the t3-code MCP server to run tool "t3_project_delete"?' },
       { ...t3ToolCall, message: 'Allow the t3-code MCP server to run tool "schedule_task"?' },
       { ...t3ToolCall, message: "Allow the t3-code MCP server to run this tool?" },
@@ -288,5 +299,12 @@ describe("T3 tool calls in a read-only orchestrating turn", () => {
 
   it("leaves every other turn's elicitations to the user", () => {
     NodeAssert.equal(codexMcpElicitationDisposition(ordinary, t3ToolCall), "ask");
+    NodeAssert.equal(
+      codexMcpElicitationDisposition(ordinary, {
+        ...t3ToolCall,
+        message: 'Allow the t3-code MCP server to run tool "t3_thread_list"?',
+      }),
+      "ask",
+    );
   });
 });
