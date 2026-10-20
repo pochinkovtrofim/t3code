@@ -43,6 +43,22 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## Group threads by project
+
+On web and desktop, the active list groups threads under a header for each project, and
+threads without a project gather under **No project** at the end. Each project has one
+project thread, a single ongoing conversation about the project as a whole. Click a
+project's header to open its project thread. The first click creates the thread, or restores it
+if you archived it. The header shows the project thread's status.
+
+Click the chevron to collapse or expand a group. A collapsed group still shows the thread you
+are viewing, and its header counts the hidden threads and shows the most urgent status among
+them. Each device remembers which groups are collapsed. Click **+** on a header to start an
+ordinary thread in that project.
+
+If a project has project threads turned off, or its environment needs a server update, its
+header only collapses the group and an existing project thread stays an ordinary row.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work.
@@ -80,9 +96,11 @@ edge to pin a thread. Section labels stay readable for the whole drag, and the s
 thread is over takes the accent color. Section labels also
 identify empty sections and a collapsed settled shelf.
 
-Drag within the pinned or active section to change its order. Other rows slide aside to show the
-spot where the thread will land. Drops into either section keep the position you choose. On
-mobile, open a thread's menu and choose **Arrange threads**. Drag a handle within or between
+Drag within the pinned section to change its order. Other rows slide aside to show the spot where
+the thread will land, and the drop keeps the position you choose. On web and desktop, threads in
+the project groups cannot be dragged to another position or section; pin or settle them from
+their menu or hover actions. A thread dropped into the active list joins its project's group in
+the active order. On mobile, open a thread's menu and choose **Arrange threads**. Drag a handle within or between
 **Pinned** and **Active** to reorder, pin, or unpin. Drop onto the **Settled** divider to
 settle a thread. The dragged card shows the action before you release it. Expand **Snoozed**
 or **Settled** to drag a parked thread back into either live section. Each drop saves; close the sheet to return to the thread list.
