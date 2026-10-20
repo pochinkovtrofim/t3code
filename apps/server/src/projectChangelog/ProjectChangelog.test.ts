@@ -922,6 +922,40 @@ describe("ProjectChangelog", () => {
     }).pipe(Effect.provide(layer), atNow);
   });
 
+  it.effect("skips the model for a repository turned off while it waited for its turn", () => {
+    const p2 = ProjectId.make("p2");
+    const { model, layer } = harness({
+      projects: [
+        shell("p1"),
+        {
+          ...shell("p2"),
+          repositoryIdentity: { ...identity, canonicalKey: "github.com/acme/api", name: "api" },
+        },
+      ],
+    });
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      const changelog = yield* ProjectChangelog.ProjectChangelog;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const gate = yield* makeGate;
+      model.state.gate = gate;
+      yield* changelog.read({ projectId: p1 });
+      yield* Deferred.await(gate.entered);
+
+      yield* insertThread({ id: "project-thread:two", project: "p2" });
+      yield* changelog.read({ projectId: p2 });
+      yield* settings.updateSettings({
+        projectSettingsOverrides: { [p2]: { projectThreadsEnabled: false } },
+      });
+      yield* Deferred.succeed(gate.release, undefined);
+      yield* changelog.drain;
+      assert.deepStrictEqual(
+        model.calls.map((call) => call.repository),
+        ["acme/web"],
+      );
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
   it.effect("does no background work for a project without a project thread", () => {
     const { github, model, layer } = harness();
     return Effect.gen(function* () {

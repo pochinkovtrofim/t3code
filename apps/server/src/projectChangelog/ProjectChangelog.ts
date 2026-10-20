@@ -661,6 +661,43 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
     return { entry, unit, promptBytes: changelogUnitPromptBytes(unit) };
   });
 
+  /**
+   * Picks the next batch and asks the model, or answers null when there is nothing to ask. Run
+   * while holding a model slot: a repository that waited minutes for one decides from what is
+   * true when its turn comes, including whether it may still use the model at all.
+   */
+  const summarizeNextBatch = Effect.fn("ProjectChangelog.summarizeNextBatch")(function* (
+    target: RepositoryTarget,
+  ) {
+    const key = target.repository.key;
+    const { settings, eligible } = yield* eligibleProjects(target.projects);
+    const owner = ownerProject(eligible);
+    if (owner === null) return null;
+    const pending = yield* store.pendingSummaries({
+      key,
+      now: yield* Clock.currentTimeMillis,
+      limit: SUMMARY_BATCH_UNITS,
+    });
+    if (pending.length === 0) return null;
+    const refs = yield* matchThreads(target, pending);
+    yield* store.setThreadRefs({ key, refs });
+    const batch = selectSummaryBatch(
+      yield* Effect.forEach(pending, (entry) =>
+        promptUnitOf(entry, refs.get(entry.unit.key) ?? []),
+      ),
+    );
+    const modelSelection = resolveProjectSettings(settings, owner.id, owner).settings
+      .textGenerationModelSelection;
+    const generated = yield* generateChangelogSummariesWith(textGeneration, {
+      repository: `${target.repository.owner}/${target.repository.name}`,
+      units: batch.map(({ unit }) => unit),
+      // CLIs need a directory to run in; nothing reads the checkout.
+      cwd: owner.workspaceRoot,
+      modelSelection,
+    }).pipe(Effect.result);
+    return { batch, generated };
+  });
+
   /** Summarizes every settled, due entry, newest first, one model call per batch. */
   const summarizeRepository = Effect.fn("ProjectChangelog.summarizeRepository")(
     function* (target: RepositoryTarget) {
@@ -668,35 +705,9 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       const heldUntil = (yield* Ref.get(summaryHolds)).get(key)?.until ?? 0;
       if (heldUntil > (yield* Clock.currentTimeMillis)) return;
       for (;;) {
-        const { settings, eligible } = yield* eligibleProjects(target.projects);
-        const owner = ownerProject(eligible);
-        if (owner === null) return;
-        const pending = yield* store.pendingSummaries({
-          key,
-          now: yield* Clock.currentTimeMillis,
-          limit: SUMMARY_BATCH_UNITS,
-        });
-        if (pending.length === 0) return;
-        const refs = yield* matchThreads(target, pending);
-        yield* store.setThreadRefs({ key, refs });
-        const batch = selectSummaryBatch(
-          yield* Effect.forEach(pending, (entry) =>
-            promptUnitOf(entry, refs.get(entry.unit.key) ?? []),
-          ),
-        );
-        const modelSelection = resolveProjectSettings(settings, owner.id, owner).settings
-          .textGenerationModelSelection;
-        const generated = yield* modelSlots
-          .withPermits(1)(
-            generateChangelogSummariesWith(textGeneration, {
-              repository: `${target.repository.owner}/${target.repository.name}`,
-              units: batch.map(({ unit }) => unit),
-              // CLIs need a directory to run in; nothing reads the checkout.
-              cwd: owner.workspaceRoot,
-              modelSelection,
-            }),
-          )
-          .pipe(Effect.result);
+        const next = yield* modelSlots.withPermits(1)(summarizeNextBatch(target));
+        if (next === null) return;
+        const { batch, generated } = next;
         const now = yield* Clock.currentTimeMillis;
         if (generated._tag === "Failure") {
           yield* Effect.logWarning("project changelog summaries failed", {
