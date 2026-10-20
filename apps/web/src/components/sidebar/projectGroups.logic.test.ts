@@ -14,6 +14,7 @@ import { makeThreadFixture, type ThreadFixtureOverrides } from "../../test-fixtu
 import type { Project, Thread } from "../../types";
 import { legacyProjectCwdPreferenceKey } from "../../uiStateStore";
 import {
+  isActiveProjectThread,
   layoutSidebarProjectGroups,
   liftProjectGroupManagers,
   listManagedProjectGroups,
@@ -401,5 +402,35 @@ describe("listManagedProjectGroups", () => {
         serverConfigs: new Map([[primary, serverConfig({ projectThreads: false })]]),
       }),
     ).toEqual([]);
+  });
+});
+
+describe("isActiveProjectThread", () => {
+  const managerOf = (project: Project) => ({
+    id: ThreadId.make(`project-thread:${project.id}`),
+    projectId: project.id,
+  });
+
+  it("holds for a project thread whose project and environment run project threads", () => {
+    expect(isActiveProjectThread(serverConfig(), managerOf(acme))).toBe(true);
+  });
+
+  it("does not hold for an ordinary thread in a managed project", () => {
+    expect(
+      isActiveProjectThread(serverConfig(), { id: ThreadId.make("ordinary"), projectId: acme.id }),
+    ).toBe(false);
+  });
+
+  it("does not hold once the project turns project threads off", () => {
+    expect(
+      isActiveProjectThread(serverConfig({ disabledProjects: [acme.id] }), managerOf(acme)),
+    ).toBe(false);
+  });
+
+  it("does not hold on an environment without project threads or without a config yet", () => {
+    expect(isActiveProjectThread(serverConfig({ projectThreads: false }), managerOf(acme))).toBe(
+      false,
+    );
+    expect(isActiveProjectThread(undefined, managerOf(acme))).toBe(false);
   });
 });

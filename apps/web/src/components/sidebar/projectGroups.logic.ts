@@ -5,9 +5,9 @@ import {
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import type { EnvironmentId, ScopedProjectRef } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId, ScopedProjectRef, ThreadId } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
-import { isProjectThreadId } from "@t3tools/shared/projectThread";
+import { isProjectThreadId, resolveProjectThread } from "@t3tools/shared/projectThread";
 
 import type {
   SidebarProjectGroupMember,
@@ -89,15 +89,30 @@ export interface ManagedProjectGroup {
   readonly manager: ProjectGroupManager;
 }
 
+function projectThreadsActive(
+  config: EnvironmentServerConfig | undefined,
+  projectId: ProjectId,
+): boolean {
+  return (
+    config?.environment.capabilities.projectThreads === true &&
+    resolveProjectSettings(config.settings, projectId).settings.projectThreadsEnabled
+  );
+}
+
+export function isActiveProjectThread(
+  config: EnvironmentServerConfig | undefined,
+  thread: { readonly id: ThreadId; readonly projectId: ProjectId },
+): boolean {
+  return (
+    config?.environment.capabilities.projectThreads === true &&
+    resolveProjectThread(config.settings, thread) !== null
+  );
+}
+
 export function liftProjectGroupManagers(input: ProjectGroupManagerInput): ProjectGroupLift {
-  const isManaged = (member: SidebarProjectGroupMember) => {
-    if (member.isScratch) return false;
-    const config = input.serverConfigs.get(member.environmentId);
-    return (
-      config?.environment.capabilities.projectThreads === true &&
-      resolveProjectSettings(config.settings, member.id, member).settings.projectThreadsEnabled
-    );
-  };
+  const isManaged = (member: SidebarProjectGroupMember) =>
+    !member.isScratch &&
+    projectThreadsActive(input.serverConfigs.get(member.environmentId), member.id);
   const managedGroups = input.groups.flatMap((group) => {
     const members = group.isScratch ? [] : group.memberProjects.filter(isManaged);
     return members.length === 0 ? [] : [{ group, members }];
