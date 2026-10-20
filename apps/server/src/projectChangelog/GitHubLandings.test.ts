@@ -585,6 +585,33 @@ describe("GitHubLandings", () => {
     },
   );
 
+  it.effect("asks for the latest release of a prerelease-only repository once an hour", () => {
+    const { layer, requests } = harness({
+      [upstreamPath("/environments?per_page=100")]: { body: environmentList([]) },
+      [upstreamPath("/deployments?per_page=30")]: { body: [] },
+      [upstreamPath("/releases?per_page=1")]: {
+        body: [{ ...shapes.releaseLatest, prerelease: true }],
+      },
+      [upstreamPath("/tags?per_page=100")]: { body: shapes.tags },
+    });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const landings = yield* GitHubLandings.GitHubLandings;
+      const sync = landings.readProduction({ repository: upstream, previousEnvironment: null });
+      const latestReads = () =>
+        requests.filter((request) => request.url === upstreamPath("/releases/latest")).length;
+
+      assert.deepStrictEqual((yield* sync).release, { _tag: "Absent" });
+      yield* TestClock.adjust(59 * 60_000);
+      assert.deepStrictEqual((yield* sync).release, { _tag: "Absent" });
+      assert.strictEqual(latestReads(), 1);
+
+      yield* TestClock.adjust(60_000);
+      assert.deepStrictEqual((yield* sync).release, { _tag: "Absent" });
+      assert.strictEqual(latestReads(), 2);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("says whether the head still contains the cursor", () => {
     const compareAt = (base: string, head: string) =>
       forkPath(`/compare/${base}...${head}?per_page=1&page=2`);

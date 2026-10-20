@@ -7,6 +7,7 @@
 // Every GET revalidates a cached answer with If-None-Match, so an unchanged repository costs
 // 304s, which GitHub does not count against the primary rate limit.
 
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -44,6 +45,7 @@ const RECENT_DEPLOYMENTS = 30;
 /** Asked when the repository's environment list cannot be read. */
 const PRODUCTION_ENVIRONMENT_NAMES = ["production", "Production"];
 const CACHED_ANSWERS_PER_OPERATION = 256;
+const LATEST_RELEASE_MISS_MS = 60 * 60_000;
 const LOOKUP_CONCURRENCY = 4;
 const SHA_ACCEPT = "application/vnd.github.sha";
 // GitHub text has no useful bound (a commit's first line can be a megabyte) and reaches every
@@ -567,13 +569,29 @@ const make = Effect.gen(function* () {
       : ({ _tag: "Unavailable" } as const);
   });
 
+  // `releases/latest` is a 404 while a repository has only drafts and prereleases, and a 404
+  // carries no ETag to revalidate, so each sync would spend a counted request on it.
+  const latestReleaseMissedAt = new Map<GitHubRepository["key"], number>();
+
   const observeRelease = Effect.fnUntraced(function* (repository: GitHubRepository) {
-    // Without releases, `releases/latest` is a 404 every sync, which no ETag revalidates; the
-    // list answers [] with one, so asking it first costs a 304 while nothing changes.
+    // The list answers [] with an ETag, so a repository without releases costs a 304.
     if (!(yield* getHasReleases(repository, repoPath(repository, "releases?per_page=1")))) {
       return { _tag: "Absent" } as const;
     }
-    const release = yield* getLatestRelease(repository, repoPath(repository, "releases/latest"));
+    const now = yield* Clock.currentTimeMillis;
+    const missedAt = latestReleaseMissedAt.get(repository.key);
+    if (missedAt !== undefined && now - missedAt < LATEST_RELEASE_MISS_MS) {
+      return { _tag: "Absent" } as const;
+    }
+    const release = yield* getLatestRelease(
+      repository,
+      repoPath(repository, "releases/latest"),
+    ).pipe(Effect.catchTags({ GitHubApiNotFoundError: () => Effect.succeed(null) }));
+    if (release === null) {
+      latestReleaseMissedAt.set(repository.key, now);
+      return { _tag: "Absent" } as const;
+    }
+    latestReleaseMissedAt.delete(repository.key);
     const sha = yield* getRefSha(
       repository,
       repoPath(repository, `commits/${encodeURIComponent(release.tag_name)}`),
@@ -595,8 +613,8 @@ const make = Effect.gen(function* () {
     return { _tag: "Found", value: signal } as const;
   });
 
-  // `releases/latest` answers 404 when only drafts and prereleases exist; any other failure is a
-  // source that could not be read this time.
+  // A 404 is a source the repository does not have; any other failure is a source that could not
+  // be read this time.
   const observe = <A>(
     effect: Effect.Effect<SourceObservation<A>, GitHubLandingsError>,
   ): Effect.Effect<SourceObservation<A>> =>
