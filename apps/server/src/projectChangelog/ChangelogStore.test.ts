@@ -140,6 +140,22 @@ layer("ChangelogStore", (it) => {
     }),
   );
 
+  it.effect("writes a known repository's row only when its name or address changed", () =>
+    Effect.gen(function* () {
+      const store = yield* fresh;
+      const sql = yield* SqlClient.SqlClient;
+      const changes = sql<{ readonly changes: number }>`SELECT total_changes() AS changes`.pipe(
+        Effect.map(([row]) => row?.changes ?? 0),
+      );
+      yield* store.ensureRepository(repository);
+      const before = yield* changes;
+      yield* store.ensureRepository(repository);
+      assert.equal(yield* changes, before);
+      const renamed = yield* store.ensureRepository({ ...repository, name: "Web" });
+      assert.equal(renamed.repository.name, "Web");
+    }),
+  );
+
   it.effect("applies a sync atomically: a failing write leaves the cursor and rows untouched", () =>
     Effect.gen(function* () {
       const store = yield* fresh;

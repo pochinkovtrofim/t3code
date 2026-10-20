@@ -312,6 +312,9 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
       }
     >();
     for (const shell of shells) {
+      const eligible = eligibleIds.has(shell.id);
+      // Resolving an uncached identity can spawn git; only eligible projects pay for it.
+      if (!eligible && shell.repositoryIdentity === null) continue;
       const resolution = resolveGitHubRepository(yield* identityOf(shell));
       if (resolution._tag !== "GitHub") continue;
       const target = byKey.get(resolution.repository.key) ?? {
@@ -320,7 +323,7 @@ const make = Effect.fn("ProjectChangelog.make")(function* (options: ProjectChang
         eligible: [],
       };
       target.projects.push(shell);
-      if (eligibleIds.has(shell.id)) target.eligible.push(shell);
+      if (eligible) target.eligible.push(shell);
       byKey.set(resolution.repository.key, target);
     }
     return byKey as ReadonlyMap<RepositoryKey, RepositoryTarget>;

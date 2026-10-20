@@ -103,6 +103,9 @@ const DDL = [
      WHERE removed_at IS NULL AND summary_state = 'pending'`,
 ] as const;
 
+/** Sorts after every id with the prefix, so the scan is a primary-key range, not a LIKE. */
+const PROJECT_THREAD_ID_RANGE_END = `${PROJECT_THREAD_ID_PREFIX}\uffff`;
+
 /** Entries kept per repository; older entries and their commits are pruned after each sync. */
 export const RETAINED_ENTRIES = 500;
 
@@ -483,6 +486,16 @@ const make = Effect.gen(function* () {
     "ChangelogStore.ensureRepository",
   )(
     function* (repository) {
+      // Called on every pass, read and watch emission: write only what changed.
+      const [existing] = yield* selectRepository(repository.key);
+      if (
+        existing !== undefined &&
+        existing.owner === repository.owner &&
+        existing.name === repository.name &&
+        existing.webUrl === repository.webUrl
+      ) {
+        return yield* decodeRepository(existing);
+      }
       yield* sql`
         INSERT INTO fork_changelog_repositories (
           repository_key, host, owner, name, web_url, sync_json, next_sync_at, updated_at
@@ -825,7 +838,9 @@ const make = Effect.gen(function* () {
   }>`
     SELECT thread_id AS "threadId", project_id AS "projectId"
     FROM orchestration_v2_projection_threads
-    WHERE deleted_at IS NULL AND thread_id LIKE ${`${PROJECT_THREAD_ID_PREFIX}%`}
+    WHERE deleted_at IS NULL
+      AND thread_id >= ${PROJECT_THREAD_ID_PREFIX}
+      AND thread_id < ${PROJECT_THREAD_ID_RANGE_END}
   `.pipe(
     Effect.map(
       (rows) =>

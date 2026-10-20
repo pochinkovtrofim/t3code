@@ -254,6 +254,7 @@ function harness(
   const projects = options.projects ?? [shell("p1")];
   /** Calls left that die, as a bug behind the project service would. */
   const crashes = { listShells: 0, getShell: 0 };
+  const resolved: Array<string> = [];
   const crashOnce = (name: keyof typeof crashes) =>
     crashes[name] > 0
       ? Effect.sync(() => (crashes[name] -= 1)).pipe(
@@ -274,7 +275,11 @@ function harness(
     ),
     Layer.provide(
       Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
-        resolve: () => Effect.succeed(identity),
+        resolve: (workspaceRoot) =>
+          Effect.sync(() => {
+            resolved.push(workspaceRoot);
+            return identity;
+          }),
       }),
     ),
     Layer.provide(
@@ -298,7 +303,7 @@ function harness(
     Layer.provideMerge(ServerSettings.layerTest(options.settings ?? {})),
     Layer.provideMerge(SqlitePersistence.layerMemory),
   );
-  return { github, model, crashes, layer };
+  return { github, model, crashes, resolved, layer };
 }
 
 const insertThread = (input: {
@@ -895,6 +900,19 @@ describe("ProjectChangelog", () => {
       yield* (yield* ProjectChangelog.ProjectChangelog).drain;
       assert.isTrue(github.state.calls.includes("readHistory"));
       assert.strictEqual(model.calls.length, 1);
+    }).pipe(Effect.provide(layer), atNow);
+  });
+
+  it.effect("resolves no identity for a project that cannot sync", () => {
+    const { resolved, layer } = harness({
+      projects: [shell("p1"), { ...shell("p2"), repositoryIdentity: null }],
+    });
+    return Effect.gen(function* () {
+      yield* insertThread({ id: "project-thread:one", project: "p1" });
+      yield* TestClock.adjust(MINUTE);
+      yield* TestClock.adjust(MINUTE);
+      yield* (yield* ProjectChangelog.ProjectChangelog).drain;
+      assert.deepStrictEqual(resolved, []);
     }).pipe(Effect.provide(layer), atNow);
   });
 
