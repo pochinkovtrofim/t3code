@@ -16,6 +16,11 @@ import * as Schema from "effect/Schema";
 
 import { createMuseSdkHost, createMuseSdkHostEffect, type MuseSdkHost } from "./sdk.ts";
 import { museModelCapabilities, resolveMuseReasoningEffort } from "./modelCatalog.ts";
+// fork: project changelog
+import {
+  buildChangelogSummariesPrompt,
+  sanitizeChangelogSummaries,
+} from "@t3tools/provider-core/server/changelogPrompt";
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import { investigationUnsupported } from "@t3tools/provider-core/server/textGenerationOperations";
 import {
@@ -342,11 +347,22 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
   });
   const generateReviewGuide: ProviderTextGeneration["generateReviewGuide"] = () =>
     Effect.fail(investigationUnsupported("generateReviewGuide", "Muse Code"));
+  // fork: project changelog
+  const generateChangelogSummaries: ProviderTextGeneration["generateChangelogSummaries"] =
+    Effect.fn("MuseTextGeneration.generateChangelogSummaries")(function* (input) {
+      const generated = yield* runMuseJson({
+        operation: "generateChangelogSummaries",
+        ...buildChangelogSummariesPrompt(input),
+        modelSelection: input.modelSelection,
+      });
+      return sanitizeChangelogSummaries(input.units, generated);
+    });
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    generateChangelogSummaries, // fork: project changelog
   } satisfies ProviderTextGeneration;
 });

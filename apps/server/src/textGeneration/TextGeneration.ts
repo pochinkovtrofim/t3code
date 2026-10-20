@@ -2,6 +2,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type { ProviderInstanceId } from "@t3tools/contracts";
+import { generateChangelogSummariesWith } from "@t3tools/provider-core/server/changelogPrompt"; // fork: project changelog
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import { TextGenerationError } from "@t3tools/contracts";
 
@@ -13,6 +14,9 @@ import * as ThreadTitleLinks from "./ThreadTitleLinks.ts";
 export type {
   BranchNameGenerationInput,
   BranchNameGenerationResult,
+  // fork: project changelog
+  ChangelogSummaryGenerationInput,
+  ChangelogSummaryGenerationResult,
   CommitMessageGenerationInput,
   CommitMessageGenerationResult,
   PrContentGenerationInput,
@@ -32,7 +36,8 @@ type TextGenerationOp =
   | "generatePrContent"
   | "generateBranchName"
   | "generateThreadTitle"
-  | "generateReviewGuide";
+  | "generateReviewGuide"
+  | "generateChangelogSummaries"; // fork: project changelog
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -72,6 +77,11 @@ export const make = Effect.gen(function* () {
     generateReviewGuide: (input) =>
       resolveInstance(registry, "generateReviewGuide", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generateReviewGuide(input)),
+      ),
+    // fork: project changelog
+    generateChangelogSummaries: (input) =>
+      resolveInstance(registry, "generateChangelogSummaries", input.modelSelection.instanceId).pipe(
+        Effect.flatMap((textGeneration) => generateChangelogSummariesWith(textGeneration, input)),
       ),
     generateThreadTitle: (input) =>
       resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(

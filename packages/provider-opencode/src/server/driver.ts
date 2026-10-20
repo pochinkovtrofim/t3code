@@ -19,6 +19,7 @@ import * as OpenCodeAdapterV2 from "./adapter.ts";
 import * as OpenCode2AdapterV2 from "./v2/adapter.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
+import { generateChangelogSummariesWith } from "@t3tools/provider-core/server/changelogPrompt"; // fork: project changelog
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import { openCodeUsageReader, type OpenCodeUsageReaderEnv } from "./usage.ts";
 import { readOpenCodeGoUsageLimits } from "./usageLimits.ts";
@@ -158,6 +159,12 @@ function selectOpenCodeRuntimeTextGeneration(
       byOpenCodeRuntime(probe.get, {
         v1: v1.generateReviewGuide(input),
         v2: v2.generateReviewGuide(input),
+      }),
+    // fork: project changelog
+    generateChangelogSummaries: (input) =>
+      byOpenCodeRuntime(probe.get, {
+        v1: generateChangelogSummariesWith(v1, input),
+        v2: generateChangelogSummariesWith(v2, input),
       }),
   };
 }

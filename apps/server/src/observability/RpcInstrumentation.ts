@@ -145,6 +145,9 @@ const RPC_AGGREGATES = {
   [WS_METHODS.projectsEnsureScratch]: "orchestration",
   [WS_METHODS.projectsCreateNew]: "orchestration",
   [WS_METHODS.projectThreadsEnsure]: "orchestration",
+  // fork: project changelog
+  [WS_METHODS.projectChangelogRead]: "project-changelog",
+  [WS_METHODS.projectChangelogWatch]: "project-changelog",
   [WS_METHODS.shellOpenInEditor]: "workspace",
   [WS_METHODS.filesystemBrowse]: "workspace",
   [WS_METHODS.filesystemGetMetadata]: "workspace",

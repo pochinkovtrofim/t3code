@@ -5,6 +5,7 @@ import { type ChatAttachment, type ModelSelection, TextGenerationError } from "@
 import { formatGeneratedBranchName, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
+import { buildChangelogSummariesPrompt, sanitizeChangelogSummaries } from "./changelogPrompt.ts"; // fork: project changelog
 import type { ProviderTextGeneration } from "./textGeneration.ts";
 import {
   buildBranchNamePrompt,
@@ -169,11 +170,24 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     });
   });
 
+  // fork: project changelog
+  const generateChangelogSummaries: ProviderTextGeneration["generateChangelogSummaries"] =
+    Effect.fn(`${name}.generateChangelogSummaries`)(function* (input) {
+      const generated = yield* run({
+        operation: "generateChangelogSummaries",
+        cwd: input.cwd,
+        modelSelection: input.modelSelection,
+        ...buildChangelogSummariesPrompt(input),
+      });
+      return sanitizeChangelogSummaries(input.units, generated);
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    generateChangelogSummaries, // fork: project changelog
   } satisfies ProviderTextGeneration;
 }

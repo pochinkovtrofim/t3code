@@ -29,6 +29,7 @@ export * from "./keybindings.ts";
 export * from "./server.ts";
 export * from "./settings.ts";
 export * from "./projectThread.ts";
+export * from "./projectChangelog.ts"; // fork: project changelog
 export * from "./git.ts";
 export * from "./vcs.ts";
 export * from "./sourceControl.ts";

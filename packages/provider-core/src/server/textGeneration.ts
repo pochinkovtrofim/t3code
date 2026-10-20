@@ -7,7 +7,13 @@ import type {
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 
+import type {
+  ChangelogSummaryGenerationInput,
+  ChangelogSummaryGenerationResult,
+} from "./changelogPrompt.ts";
 import type { TextGenerationPolicy } from "./textGenerationPolicy.ts";
+
+export type { ChangelogSummaryGenerationInput, ChangelogSummaryGenerationResult };
 
 export interface CommitMessageGenerationInput {
   cwd: string;
@@ -114,4 +120,9 @@ export interface ProviderTextGeneration {
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
+
+  // fork: project changelog. Optional, so a provider added upstream compiles without it.
+  readonly generateChangelogSummaries?: (
+    input: ChangelogSummaryGenerationInput,
+  ) => Effect.Effect<ChangelogSummaryGenerationResult, TextGenerationError>;
 }

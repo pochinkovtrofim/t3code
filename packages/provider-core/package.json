@@ -19,6 +19,10 @@
       "types": "./src/server/auth.ts",
       "import": "./src/server/auth.ts"
     },
+    "./server/changelogPrompt": {
+      "types": "./src/server/changelogPrompt.ts",
+      "import": "./src/server/changelogPrompt.ts"
+    },
     "./server/collectStreamText": {
       "types": "./src/server/collectStreamText.ts",
       "import": "./src/server/collectStreamText.ts"

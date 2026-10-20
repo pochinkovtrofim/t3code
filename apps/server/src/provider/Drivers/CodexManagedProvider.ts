@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { generateChangelogSummariesWith } from "@t3tools/provider-core/server/changelogPrompt"; // fork: project changelog
 import { chatGptModels } from "../CodexChatGptModels.ts";
 import { makeCodexManagedRuntime } from "../CodexManagedRuntime.ts";
 import { ProviderDriverError } from "../Errors.ts";
@@ -269,6 +270,12 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
       protect("generateThreadTitle", nativeGeneration.generateThreadTitle(value)),
     generateReviewGuide: (value) =>
       protect("generateReviewGuide", nativeGeneration.generateReviewGuide(value)),
+    // fork: project changelog
+    generateChangelogSummaries: (value) =>
+      protect(
+        "generateChangelogSummaries",
+        generateChangelogSummariesWith(nativeGeneration, value),
+      ),
   };
   return {
     instanceId,
