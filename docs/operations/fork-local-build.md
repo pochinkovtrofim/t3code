@@ -36,8 +36,9 @@ The build needs the Linux desktop build tools: `cargo`, `cc`, `make`, `pkg-confi
 - The app is in `~/.local/opt/t3-code-fork/<version>/`. The installer keeps the current
   version and the most recently installed other version, and deletes older ones.
 - The launcher is `~/.local/bin/t3-code-fork`, a link to the current version's `AppRun`.
-- The desktop entry is `~/.local/share/applications/t3-code-fork.desktop`, with window class
-  `t3code-fork`.
+- The desktop entry is `~/.local/share/applications/t3-code-fork.desktop`. Under Wayland the
+  fork's window app id is `t3-code-fork`, which matches the entry. Under X11 its window class
+  is `t3code-fork`.
 - The T3 home is `~/.t3-fork`. The fork sets `T3CODE_HOME` to it for its server, its
   terminals, and its `t3` launcher, even when `T3CODE_HOME` is already set.
 - The Electron profile is `~/.config/t3code-fork`. The single-instance lock lives there, so
