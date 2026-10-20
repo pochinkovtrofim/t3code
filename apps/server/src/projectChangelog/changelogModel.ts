@@ -464,8 +464,9 @@ function mergeFragments(earlier: ChangeUnit, later: ChangeUnit): ChangeUnit {
 }
 
 /**
- * `units` with the earlier fragment each one has among `stored` folded in. A stored unit that
- * does not end below its namesake is that unit before it grew, and is replaced.
+ * `units` with the fragment each one has among `stored` folded in, on whichever side it lies: a
+ * hole below a stored fragment can resolve after it. A stored unit that overlaps its namesake is
+ * that unit before it grew, and is replaced.
  */
 export function withStoredFragments(
   units: ReadonlyArray<ChangeUnit>,
@@ -473,10 +474,11 @@ export function withStoredFragments(
 ): ReadonlyArray<ChangeUnit> {
   const storedByKey = new Map(stored.map((unit) => [unit.key, unit]));
   return units.map((unit) => {
-    const earlier = storedByKey.get(unit.key);
-    return earlier !== undefined && earlier.lastOrdinal < unit.firstOrdinal
-      ? mergeFragments(earlier, unit)
-      : unit;
+    const fragment = storedByKey.get(unit.key);
+    if (fragment === undefined) return unit;
+    if (fragment.lastOrdinal < unit.firstOrdinal) return mergeFragments(fragment, unit);
+    if (fragment.firstOrdinal > unit.lastOrdinal) return mergeFragments(unit, fragment);
+    return unit;
   });
 }
 

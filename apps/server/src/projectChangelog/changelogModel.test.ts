@@ -440,6 +440,26 @@ describe("groupChangeUnits", () => {
     expect(withStoredFragments(later, stored)).toEqual(units.toReversed());
   });
 
+  it("keeps both fragments of a pull request when the lower one resolves after the upper", () => {
+    const split = pull(7);
+    const together = groupChangeUnits({
+      repository,
+      below: [],
+      landings: positioned([viaPull("a", split), viaPull("b", pull(8)), viaPull("c", split)]),
+    }).units;
+    const upper = groupChangeUnits({
+      repository,
+      below: [],
+      landings: positioned([viaPull("c", split)], 2),
+    }).units;
+    const lower = groupChangeUnits({
+      repository,
+      below: [],
+      landings: positioned([viaPull("a", split)]),
+    }).units;
+    expect(withStoredFragments(lower, upper)).toEqual([together[0]]);
+  });
+
   it("keys another repository's pull request apart from this repository's", () => {
     const { units } = groupChangeUnits({
       repository,
