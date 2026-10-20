@@ -1,12 +1,14 @@
 import { useAtomValue } from "@effect/atom-react";
+import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { MessagesSquareIcon } from "lucide-react";
+import { MessagesSquareIcon, ScrollTextIcon } from "lucide-react";
 
 import { useManagedProjectGroups } from "../hooks/useManagedProjectGroups";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useOpenProjectThread } from "../hooks/useOpenProjectThread";
+import { useRightPanelStore } from "../rightPanelStore";
 import { environmentAtomList, environmentIdsKey } from "../state/environmentAtomList";
 import { projectEnvironment } from "../state/projects";
 import { buildThreadRouteParams } from "../threadRoutes";
@@ -17,6 +19,7 @@ import {
   type CommandPaletteSubmenuItem,
 } from "./CommandPalette.logic";
 import { ProjectFavicon } from "./ProjectFavicon";
+import { canShowProjectChangelog } from "./projectChangelog/projectChangelogPanel.logic";
 import { describeProjectThreadEntry } from "./projectThreadEntry.logic";
 import type { ProjectGroupManager } from "./sidebar/projectGroups.logic";
 import { useProjectThreadStatus } from "./sidebar/projectThreadStatus";
@@ -89,4 +92,29 @@ function ProjectThreadPaletteDescription(props: {
     pending: false,
     nowMs: Date.parse(`${nowMinute}:00.000Z`),
   }).subLine;
+}
+
+export function projectChangelogPaletteItem(
+  thread:
+    | {
+        readonly environmentId: EnvironmentId;
+        readonly id: ThreadId;
+        readonly projectId: ProjectId;
+      }
+    | null
+    | undefined,
+  config: EnvironmentServerConfig | undefined,
+): CommandPaletteActionItem | null {
+  if (!thread || !canShowProjectChangelog(config, thread)) return null;
+  const threadRef = scopeThreadRef(thread.environmentId, thread.id);
+  return {
+    kind: "action",
+    value: "action:show-project-changelog",
+    searchTerms: ["changelog", "production", "deployed", "released", "project thread"],
+    title: "Show project changelog",
+    icon: <ScrollTextIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      useRightPanelStore.getState().open(threadRef, "changelog");
+    },
+  };
 }

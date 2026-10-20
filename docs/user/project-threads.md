@@ -40,3 +40,22 @@ as guidance.
 
 Both settings need an environment running a T3 Code version with project threads.
 When a selected environment is older, the controls stay locked until you update it.
+
+## Changelog
+
+The project thread's **Changelog** tab lists what landed on the project's GitHub default
+branch, newest first, in plain language. Open it from the changelog button next to the
+project thread's title, or with **Show project changelog** in the command palette. Each
+entry links to its pull request or commit on GitHub and to the T3 Code thread that did the
+work when T3 Code knows it, and says whether it is in production yet.
+
+Production is detected automatically. T3 Code uses the repository's production deployment
+first, then its latest release or tag. A repository with none of these counts everything
+merged to the default branch as in production. The line above the entries says which one
+was used.
+
+- Only projects that have a project thread are kept up to date.
+- The changelog reads GitHub with the same sign-in T3 Code already uses for pull requests;
+  see [Connect an account](./source-control.md#github).
+- Entries are written by the environment's text generation model. Until an entry is
+  summarized it shows the pull request title or commit subject.
